@@ -3,6 +3,7 @@ import {
   Delete,
   Get,
   Post,
+  Patch,
   Param,
   Query,
   Body,
@@ -31,10 +32,8 @@ import { Throttle } from '@nestjs/throttler';
 import { TradeDealsService } from './trade-deals.service';
 import { TradeDeal } from './entities/trade-deal.entity';
 import { User } from '../auth/entities/user.entity';
-import { KycGuard } from '../auth/kyc.guard';
-import { RolesGuard } from '../auth/roles.guard';
+import { KycGuard, RolesGuard, OptionalJwtGuard } from '../common/guards';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { OptionalJwtGuard } from '../auth/optional-jwt.guard';
 import { CreateTradeDealDto } from './dto/create-trade-deal.dto';
 import { DealCoFarmersService } from './deal-co-farmers.service';
 import { DealDeploymentService } from './deal-deployment.service';
@@ -44,8 +43,12 @@ import {
 } from './dto/co-farmer.dto';
 import { DealCoFarmer } from './entities/deal-co-farmer.entity';
 import { ActivityFeedResponseDto } from './dto/activity-feed.dto';
+import { ActivityFeedService } from './activity-feed.service';
 
 import { TradeDealAccessRequest, TradeDealsGuard } from './trade-deals.guard';
+
+import { EsgScoringService, EsgQuestionnaireDto } from './esg-scoring.service';
+import { DealHealthService } from './deal-health.service';
 
 interface AuthRequest extends Request {
   user: User;
@@ -59,6 +62,8 @@ export class TradeDealsController {
     private readonly dealCoFarmersService: DealCoFarmersService,
     private readonly dealDeploymentService: DealDeploymentService,
     private readonly activityFeedService: ActivityFeedService,
+    private readonly esgScoringService: EsgScoringService,
+    private readonly dealHealthService: DealHealthService,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
   ) {}
 
@@ -279,6 +284,8 @@ export class TradeDealsController {
   @ApiQuery({ name: 'maxRoi', required: false, example: 50 })
   @ApiQuery({ name: 'duration', required: false, example: '3-6 months' })
   @ApiQuery({ name: 'riskRating', required: false, example: 'Medium' })
+  @ApiQuery({ name: 'minEsgScore', required: false, example: 70 })
+  @ApiQuery({ name: 'esgRating', required: false, example: 'AA' })
   @ApiQuery({ name: 'status', required: false, example: 'almost funded' })
   @ApiQuery({ name: 'sortBy', required: false, example: 'newest' })
   @ApiQuery({ name: 'q', required: false, example: 'cocoa cooperative' })
@@ -298,6 +305,8 @@ export class TradeDealsController {
       maxRoi: query.maxRoi ? Number(query.maxRoi) : undefined,
       duration: query.duration as any,
       riskRating: query.riskRating as any,
+      minEsgScore: query.minEsgScore ? Number(query.minEsgScore) : undefined,
+      esgRating: query.esgRating,
       status: query.status as any,
       sortBy: query.sortBy as any,
       q: query.q,
@@ -386,5 +395,80 @@ export class TradeDealsController {
       limit: limit ? parseInt(limit, 10) : undefined,
       isAdmin,
     });
+  }
+
+  // ── ESG / Impact Scoring Endpoints (#1012) ────────────────────────────────
+
+  @Post(':id/esg-questionnaire')
+  @UseGuards(AuthGuard('jwt'), RolesGuard, KycGuard)
+  @Roles('trader', 'farmer')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: 'Submit standardized ESG questionnaire for a trade deal',
+  })
+  @ApiParam({ name: 'id', description: 'Trade deal UUID' })
+  @ApiResponse({ status: 200, description: 'ESG questionnaire processed and queued for review' })
+  @ApiResponse({ status: 403, description: 'Not authorized for this deal' })
+  @ApiResponse({ status: 404, description: 'Trade deal not found' })
+  async submitEsgQuestionnaire(
+    @Param('id') id: string,
+    @Request() req: AuthRequest,
+    @Body() dto: EsgQuestionnaireDto,
+  ) {
+    return this.esgScoringService.submitQuestionnaire(id, req.user.id, dto);
+  }
+
+  @Get(':id/esg-score')
+  @ApiOperation({ summary: 'Get computed ESG score and sub-score breakdown' })
+  @ApiParam({ name: 'id', description: 'Trade deal UUID' })
+  @ApiResponse({ status: 200, description: 'Deal ESG score metrics' })
+  @ApiResponse({ status: 404, description: 'Trade deal not found' })
+  async getDealEsgScore(@Param('id') id: string) {
+    return this.esgScoringService.getDealEsgScore(id);
+  }
+
+  @Get('admin/esg-queue')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin', 'compliance_officer')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({ summary: 'List deals pending ESG compliance review (Admin only)' })
+  @ApiResponse({ status: 200, description: 'Pending ESG review deals list' })
+  async getEsgReviewQueue() {
+    return this.esgScoringService.getPendingReviewDeals();
+  }
+
+  // ── Deal Health Indicators (#1002) ────────────────────────────────────────
+
+  @Get(':id/health')
+  @ApiOperation({
+    summary:
+      'Get computed deal health snapshot: risk score, funding pace vs. timeline, and milestone progress vs. expected schedule',
+  })
+  @ApiParam({ name: 'id', description: 'Trade deal UUID' })
+  @ApiResponse({ status: 200, description: 'Deal health snapshot' })
+  @ApiResponse({ status: 404, description: 'Trade deal not found' })
+  async getDealHealth(@Param('id') id: string) {
+    return this.dealHealthService.getDealHealth(id);
+  }
+
+  @Patch(':id/esg-review')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin', 'compliance_officer')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({ summary: 'Approve, reject, or adjust ESG review for a deal (Admin only)' })
+  @ApiParam({ name: 'id', description: 'Trade deal UUID' })
+  @ApiResponse({ status: 200, description: 'ESG review decision applied' })
+  async reviewEsgScore(
+    @Param('id') id: string,
+    @Request() req: AuthRequest,
+    @Body() body: { approved: boolean; notes?: string; adjustedScore?: number },
+  ) {
+    return this.esgScoringService.reviewScore(
+      id,
+      req.user.id,
+      body.approved,
+      body.notes,
+      body.adjustedScore,
+    );
   }
 }

@@ -14,6 +14,7 @@ import { Exclude } from 'class-transformer';
 import { User } from '../../auth/entities/user.entity';
 import { Document } from './document.entity';
 import { Investment } from '../../investments/entities/investment.entity';
+import type { AccreditationTier } from '../../auth/entities/user.entity';
 
 export type TradeDealStatus =
   | 'draft'
@@ -26,7 +27,10 @@ export type TradeDealStatus =
   | 'expired';
 
 export type SettlementStatus =
-  'pending' | 'settling' | 'settled' | 'settlement_failed';
+  | 'pending'
+  | 'settling'
+  | 'settled'
+  | 'settlement_failed';
 
 @Entity('trade_deals')
 @Index(['farmerId', 'status'])
@@ -226,16 +230,6 @@ export class TradeDeal {
   })
   deliveryDate: Date;
 
-  @Column({ name: 'risk_rating', nullable: true })
-  @ApiProperty({
-    description: 'Risk rating for the listing',
-    required: false,
-    nullable: true,
-    enum: ['Low', 'Medium', 'High'],
-  })
-  // `riskRating` was consolidated later in the file with the full enum
-  // and larger varchar length. Keep a single declaration below.
-
   @Column({ name: 'farm_location', nullable: true })
   @ApiProperty({
     description: 'Textual farm location description',
@@ -406,6 +400,20 @@ export class TradeDeal {
   lotStep: number;
 
   @Column({
+    name: 'milestone_release_pct',
+    type: 'decimal',
+    precision: 5,
+    scale: 2,
+    default: 0,
+  })
+  @ApiProperty({
+    description:
+      'Percentage of 98% escrow pool to release per completed milestone (0 = release at completion only)',
+    example: 20,
+  })
+  milestoneReleasePct: number;
+
+  @Column({
     name: 'settlement_status',
     type: 'varchar',
     length: 32,
@@ -439,4 +447,17 @@ export class TradeDeal {
 
   @Column({ name: 'settled_at', type: 'timestamptz', nullable: true })
   settledAt: Date | null;
+
+  // #902 — Minimum accreditation tier required to invest in this deal
+  @Column({
+    name: 'minimum_tier',
+    type: 'varchar',
+    default: 'retail',
+  })
+  @ApiProperty({
+    description: 'Minimum investor accreditation tier required to invest',
+    enum: ['retail', 'accredited', 'institutional'],
+    example: 'retail',
+  })
+  minimumTier: AccreditationTier;
 }

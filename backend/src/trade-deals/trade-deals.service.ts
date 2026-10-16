@@ -218,8 +218,10 @@ export class TradeDealsService {
     maxRoi?: number;
     duration?: DealDurationBucket;
     riskRating?: 'Low' | 'Medium' | 'High';
+    minEsgScore?: number;
+    esgRating?: string;
     status?: 'open' | 'almost funded' | 'fully funded';
-    sortBy?: DealSearchSortBy;
+    sortBy?: DealSearchSortBy | 'highest_esg';
     q?: string;
     page?: number;
     limit?: number;
@@ -259,6 +261,12 @@ export class TradeDealsService {
         'deal.traderId',
         'deal.riskScore',
         'deal.riskRating',
+        'deal.esgScore',
+        'deal.environmentalScore',
+        'deal.socialScore',
+        'deal.governanceScore',
+        'deal.esgRating',
+        'deal.esgStatus',
       ])
       .skip(skip)
       .take(limit);
@@ -351,7 +359,25 @@ export class TradeDealsService {
       );
     }
 
+    if (typeof query.minEsgScore === 'number' && Number.isFinite(query.minEsgScore)) {
+      qb.andWhere('COALESCE(deal.esg_score, 0) >= :minEsgScore', {
+        minEsgScore: query.minEsgScore,
+      });
+    }
+
+    if (query.esgRating) {
+      qb.andWhere('deal.esg_rating = :esgRating', {
+        esgRating: query.esgRating,
+      });
+    }
+
     switch (query.sortBy) {
+      case 'highest_esg':
+        qb.orderBy('COALESCE(deal.esg_score, 0)', 'DESC').addOrderBy(
+          'deal.created_at',
+          'DESC',
+        );
+        break;
       case 'highest_roi':
         qb.orderBy('COALESCE(deal.expected_roi, 0)', 'DESC').addOrderBy(
           'deal.created_at',
@@ -621,7 +647,30 @@ export class TradeDealsService {
       signatureVerified: dto.signatureVerified ?? false,
     });
 
-    return this.documentRepo.save(doc);
+     return this.documentRepo.save(doc);
+  }
+
+  /**
+   * Retrieve a single document by id (used by the watermark regeneration
+   * flow — issue #1005).
+   */
+  async getDocument(documentId: string): Promise<Document | null> {
+    return this.documentRepo.findOne({ where: { id: documentId } });
+  }
+
+  /**
+   * Update the storage hash / URL of an existing document record.
+   * Used when a document is re-uploaded (e.g. watermarked regeneration).
+   */
+  async updateDocumentStorage(
+    documentId: string,
+    ipfsHash: string,
+    storageUrl: string,
+  ): Promise<void> {
+    await this.documentRepo.update(documentId, {
+      ipfsHash,
+      storageUrl,
+    });
   }
 
   async cancelDeal(dealId: string, traderId: string): Promise<TradeDeal> {

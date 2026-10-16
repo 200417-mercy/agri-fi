@@ -8,6 +8,8 @@ import { CurrencyConverterService } from './currency-converter.service';
 import { Investment } from './entities/investment.entity';
 import { InvestmentEvent } from './entities/investment-event.entity';
 import { SecondaryTrade } from './entities/secondary-trade.entity';
+import { SecondaryOrder } from './entities/secondary-order.entity';
+import { AutoInvestPlan } from './entities/auto-invest-plan.entity';
 import { TradeDeal } from '../trade-deals/entities/trade-deal.entity';
 import { User } from '../auth/entities/user.entity';
 import { FeeConfiguration } from '../database/entities/fee-configuration.entity';
@@ -21,7 +23,7 @@ import { MarketplaceSettlementService } from './marketplace-settlement.service';
 import { MarketplaceSettlementController } from './marketplace-settlement.controller';
 import { TaxReportService } from './tax-report.service';
 import { ReceiptService } from './receipt.service';
-import { AuditModule } from '../audit/audit.module';
+import { AccreditationModule } from '../accreditation/accreditation.module';
 
 @Module({
   imports: [
@@ -29,20 +31,24 @@ import { AuditModule } from '../audit/audit.module';
       Investment,
       InvestmentEvent,
       SecondaryTrade,
+      SecondaryOrder,
+      AutoInvestPlan,
       TradeDeal,
       User,
       FeeConfiguration,
+      PaymentDistribution,
     ]),
     StellarModule,
     QueueModule,
     ReferralModule,
     AuthModule,
-    AuditModule,
+    AccreditationModule,
   ],
   controllers: [
     InvestmentsController,
     FeeConfigurationController,
     MarketplaceSettlementController,
+    AutoInvestController,
   ],
   providers: [
     InvestmentsService,
@@ -53,6 +59,10 @@ import { AuditModule } from '../audit/audit.module';
     MarketplaceSettlementService,
     TaxReportService,
     ReceiptService,
+    InvoiceService,
+    SecondaryOrderMatchingService,
+    AutoInvestService,
+    RiskScoringService,
   ],
   exports: [
     InvestmentsService,
@@ -61,6 +71,8 @@ import { AuditModule } from '../audit/audit.module';
     FeeConfigurationService,
     CurrencyConverterService,
     MarketplaceSettlementService,
+    SecondaryOrderMatchingService,
+    AutoInvestService,
   ],
 })
 export class InvestmentsModule {}

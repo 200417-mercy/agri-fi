@@ -10,7 +10,7 @@ import { SorobanEventIndexer } from './soroban-event-indexer.service';
 import {
   TransactionLog,
   TxStatus,
-} from '../stellar/entities/transaction-log.entity';
+} from '../database/entities/transaction-log.entity';
 import { ShipmentMilestone } from '../shipments/entities/shipment-milestone.entity';
 import { TradeDeal } from '../trade-deals/entities/trade-deal.entity';
 import { QueueService } from '../queue/queue.service';
@@ -167,6 +167,38 @@ describe('SorobanEventIndexer', () => {
 
       // Should still log but not crash
       expect(logger.info).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handlePartialRelease', () => {
+    it('should emit the partial release queue event', async () => {
+      const handleMethod = (service as any).handlePartialRelease;
+      const data = {
+        dealId: 'deal-001',
+        amountBps: 2500,
+        amount: 25000,
+      };
+      const txHash = 'tx-partial-001';
+
+      await handleMethod.call(service, data, txHash);
+
+      expect(txLogRepo.update).toHaveBeenCalledWith(
+        { txHash },
+        {
+          status: TxStatus.SUCCESS,
+          dealId: 'deal-001',
+        },
+      );
+
+      expect(queueService.emit).toHaveBeenCalledWith(
+        'milestone.partial_release',
+        expect.objectContaining({
+          dealId: 'deal-001',
+          amountBps: 2500,
+          amount: 25000,
+          txHash,
+        }),
+      );
     });
   });
 

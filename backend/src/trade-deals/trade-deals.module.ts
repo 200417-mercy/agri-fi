@@ -13,6 +13,7 @@ import { DealCoFarmer } from './entities/deal-co-farmer.entity';
 import { Document } from './entities/document.entity';
 import { DealHealthAlert } from './entities/deal-health-alert.entity';
 import { Investment } from '../investments/entities/investment.entity';
+import { InvestmentsModule } from '../investments/investments.module';
 import { ShipmentMilestone } from '../shipments/entities/shipment-milestone.entity';
 import { User } from '../auth/entities/user.entity';
 import { StellarModule } from '../stellar/stellar.module';
@@ -22,7 +23,9 @@ import { TradeDealsCronService } from './trade-deals-cron.service';
 import { DealFundingAlertService } from './deal-funding-alert.service';
 import { DealDigestService } from './deal-digest.service';
 import { RiskScoringService } from './risk-scoring.service';
+import { EsgScoringService } from './esg-scoring.service';
 import { DealHealthMonitorService } from './deal-health-monitor.service';
+import { DealHealthService } from './deal-health.service';
 import { ActivityFeedService } from './activity-feed.service';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AuditModule } from '../audit/audit.module';
@@ -56,6 +59,7 @@ const DEALS_CACHE_TTL_MS = 30_000;
     SorobanModule,
     WebhooksModule,
     HttpModule,
+    InvestmentsModule,
     /**
      * #743 — Cache active deals list in Redis.
      *
@@ -97,7 +101,9 @@ const DEALS_CACHE_TTL_MS = 30_000;
     DealFundingAlertService,
     DealDigestService,
     RiskScoringService,
+    EsgScoringService,
     DealHealthMonitorService,
+    DealHealthService,
     ActivityFeedService,
     makeGaugeProvider({
       name: 'deal_health_alerts_active_total',
@@ -110,6 +116,8 @@ const DEALS_CACHE_TTL_MS = 30_000;
     DealCoFarmersService,
     DealDigestService,
     RiskScoringService,
+    EsgScoringService,
+    DealHealthService,
     ActivityFeedService,
   ],
 })

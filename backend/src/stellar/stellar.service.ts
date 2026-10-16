@@ -11,7 +11,10 @@ import { ConfigService } from '@nestjs/config';
 import { PinoLogger } from 'nestjs-pino';
 import { createHash } from 'crypto';
 import axios from 'axios';
-import { TransactionLog, TxStatus } from './entities/transaction-log.entity';
+import {
+  TransactionLog,
+  TxStatus,
+} from '../database/entities/transaction-log.entity';
 import {
   CursorPaginatedResult,
   decodeCursor,
@@ -40,6 +43,8 @@ import {
   generateBatchMemo,
 } from './utils/transaction-chunker';
 import { HorizonFailoverClient } from './horizon-failover';
+import { InjectMetric } from '@willsoto/nestjs-prometheus';
+import { Counter, Histogram } from 'prom-client';
 
 export const SEQUENCE_REDIS_CLIENT = 'SEQUENCE_REDIS_CLIENT';
 const SEQUENCE_CACHE_TTL = 5; // seconds
@@ -91,9 +96,34 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
     @InjectRepository(TransactionLog)
     private readonly txLogRepo: Repository<TransactionLog>,
     private readonly kmsService: KmsService,
+    @Optional() private readonly tokenIssuerService?: TokenIssuerService,
+    @Optional()
+    private readonly escrowReleaseService?: EscrowReleaseService,
+    @Optional() private readonly investmentTxService?: InvestmentTxService,
+    @Optional() private readonly anchorsService?: AnchorsService,
+    @Optional()
+    private readonly stellarQueriesService?: StellarQueriesService,
     @Optional()
     @Inject(SEQUENCE_REDIS_CLIENT)
     private readonly sequenceRedis: RedisClientType | null,
+    @Optional()
+    @InjectMetric('horizon_status_stale_fallbacks_total')
+    private readonly horizonStaleFallbackCounter: Counter<string> | null,
+    @Optional()
+    @InjectMetric('escrow_release_batch_duration_seconds')
+    private readonly batchDuration?: Histogram<string>,
+    @Optional()
+    @InjectMetric('escrow_release_batches_total')
+    private readonly batchesTotal?: Counter<string>,
+    @Optional()
+    @InjectMetric('escrow_release_claimable_balances_total')
+    private readonly claimableBalancesTotal?: Counter<string>,
+    @Optional()
+    @InjectMetric('escrow_stellar_tx_total')
+    private readonly stellarTxTotal?: Counter<string>,
+    @Optional()
+    @InjectMetric('escrow_stellar_tx_failures_total')
+    private readonly stellarTxFailures?: Counter<string>,
   ) {
     this.localSequenceCache = new Map();
     this.enableSequenceCache = true;
@@ -1069,31 +1099,14 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
     const escrowKeypair = Keypair.fromSecret(escrowSecret);
 
     // Convert to stroops using BigNumber (1 XLM = 10^7 stroops)
-    const totalValueBN = new BigNumber(totalValue);
-    const totalStroopsBN = totalValueBN.multipliedBy(1e7);
-
-    if (totalStroopsBN.isLessThanOrEqualTo(0)) {
-      throw new Error('Invalid totalValue');
-    }
-
-    // Calculate platform fee (2%) and investor pool (98%) using BigNumber
-    const platformStroopsBN = totalStroopsBN
-      .multipliedBy(0.02)
-      .integerValue(BigNumber.ROUND_FLOOR);
-    const investorPoolStroopsBN = totalStroopsBN.minus(platformStroopsBN);
-
-    const platformStroops = platformStroopsBN.toNumber();
-    const investorPoolStroops = investorPoolStroopsBN.toNumber();
-
-    // Compute total tokens safely
-    const totalTokens = investorShares.reduce(
-      (sum, s) => sum + s.tokenAmount,
-      0,
-    );
-
-    if (totalTokens <= 0) {
-      throw new Error('Invalid investor token distribution');
-    }
+    const escrowReleaseService =
+      this.escrowReleaseService ?? new EscrowReleaseService();
+    const {
+      totalStroopsBN,
+      platformStroops,
+      investorPoolStroops,
+      totalTokens,
+    } = escrowReleaseService.calculateReleasePlan(totalValue, investorShares);
 
     // Pre-check which investors have a USDC trustline for claimable balance logic
     const trustlineResults = await Promise.allSettled(
@@ -1132,6 +1145,7 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
       const capturedBatch = batch;
       const capturedBatchStart = batchStart;
       const isLastBatch = batchIdx === batchCount - 1;
+      const batchStartedAt = process.hrtime.bigint();
 
       try {
         // #826 — use fee-bump retry to handle tx_insufficient_fee on congested networks
@@ -1215,6 +1229,11 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
 
         const txHash = (result as any).hash as string;
         txIds.push(txHash);
+        this.stellarTxTotal?.inc();
+        this.batchesTotal?.inc({ result: 'success' });
+        const batchElapsed =
+          Number(process.hrtime.bigint() - batchStartedAt) / 1e9;
+        this.batchDuration?.observe({ result: 'success' }, batchElapsed);
 
         // Log any claimable balances created in this batch
         const batchClaimable = claimableInvestors.filter(
@@ -1224,6 +1243,7 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
         );
         for (const ci of batchClaimable) {
           ci.txHash = txHash;
+          this.claimableBalancesTotal?.inc();
           await this.saveLog({
             dealId: ci.walletAddress,
             txHash,
@@ -1231,6 +1251,12 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
           });
         }
       } catch (err: any) {
+        this.stellarTxTotal?.inc();
+        this.stellarTxFailures?.inc();
+        this.batchesTotal?.inc({ result: 'failure' });
+        const batchElapsed =
+          Number(process.hrtime.bigint() - batchStartedAt) / 1e9;
+        this.batchDuration?.observe({ result: 'failure' }, batchElapsed);
         this.logger.error(
           { batchIdx, totalBatches: batchCount },
           `Escrow release failed at batch ${batchIdx}: ${err.message}`,
@@ -1299,11 +1325,10 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
    * Uses stellar.expert — network-aware (testnet vs public).
    */
   getVerificationUrl(txHash: string): string {
-    const baseUrl =
-      this.networkPassphrase === Networks.TESTNET
-        ? 'https://stellar.expert/explorer/testnet/tx'
-        : 'https://stellar.expert/explorer/public/tx';
-    return `${baseUrl}/${txHash}`;
+    return (this.stellarQueriesService ?? new StellarQueriesService()).getVerificationUrl(
+      this.networkPassphrase,
+      txHash,
+    );
   }
 
   /**
@@ -1396,11 +1421,13 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
     let stellarMemo: Memo;
 
     if (memoType === 'hash') {
-      const hash = createHash('sha256').update(memo).digest();
-      stellarMemo = Memo.hash(hash.toString('hex'));
-    } else {
-      // Stellar memo text is limited to 28 bytes; truncate if needed
-      const memoText = memo.slice(0, 28);
+const anchorsService = this.anchorsService ?? new AnchorsService();
+    const hash = anchorsService.buildHashMemo(memo);
+    stellarMemo = Memo.hash(hash.toString('hex'));
+  } else {
+    const memoText = (this.anchorsService ?? new AnchorsService()).truncateMemoText(
+      memo,
+    );
       stellarMemo = Memo.text(memoText);
     }
 
@@ -1609,14 +1636,12 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
   ): Promise<string> {
     const investorAccount = await this.server.loadAccount(investorWallet);
     const tradeAsset = createAsset(assetCode, issuerPublicKey);
-
     const needsTrustline = !(await this.hasTrustline(
       investorAccount,
       tradeAsset,
     ));
 
     if (needsTrustline) {
-      // Each trustline requires 0.5 XLM base reserve; ensure the investor can cover it
       const xlmBalance = parseFloat(
         (
           investorAccount.balances.find(
@@ -1624,9 +1649,11 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
           ) as any
         )?.balance ?? '0',
       );
-      // Minimum spendable = existing subentries * 0.5 + 2 (base) + 0.5 (new trustline) + fee buffer
-      const minRequired =
-        (investorAccount.subentry_count + 1) * 0.5 + 2 + 0.001;
+      const investmentTxService =
+        this.investmentTxService ?? new InvestmentTxService();
+      const minRequired = investmentTxService.computeReserveRequirement(
+        investorAccount.subentry_count,
+      );
       if (xlmBalance < minRequired) {
         throw new Error(
           `Insufficient XLM balance for trustline base reserve. ` +
@@ -1655,9 +1682,14 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
         }),
       )
       .addMemo(
-        Memo.text(investmentMemo || `invest:${assetCode}:${tokenAmount}`),
-      )
-      ;
+        Memo.text(
+          (this.investmentTxService ?? new InvestmentTxService()).buildInvestmentMemo(
+            assetCode,
+            tokenAmount,
+            investmentMemo,
+          ),
+        ),
+      );
 
     this.addComplianceDataOperations(txBuilder, complianceData);
 
@@ -2464,10 +2496,13 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
    * Terminal states ('success' | 'failed') are cached in Redis for
    * TX_STATUS_CACHE_TTL_SECONDS (1 hour) to avoid redundant Horizon API calls.
    * Pending transactions are never cached because their state can still change.
+   *
+   * On Horizon error, returns the last cached status (if any) with a stale: true flag
+   * instead of throwing, allowing consumers to proceed with last-known state.
    */
   async getTransactionStatus(
     txId: string,
-  ): Promise<'success' | 'failed' | 'pending'> {
+  ): Promise<'success' | 'failed' | 'pending' | { status: 'success' | 'failed'; stale: true }> {
     // 1. Cache read — skip Horizon if we already have a terminal result.
     const cached = await this.getCachedTxStatus(txId);
     if (cached) {
@@ -2491,8 +2526,39 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
       if (err?.response?.status === 404) {
         return 'pending';
       }
+
+      // Horizon error - try stale fallback
+      this.logger.warn(
+        { txId, error: (err as Error).message },
+        'Horizon error during transaction status check, attempting stale fallback',
+      );
+
+      // Check if we have a cached value to fall back to
+      const staleCached = await this.getCachedTxStatus(txId);
+      if (staleCached) {
+        this.logger.info(
+          { txId, status: staleCached },
+          'Returning stale cached status due to Horizon error',
+        );
+        // Increment metrics counter for stale fallbacks
+        this.incrementHorizonStaleFallbackCounter();
+        return { status: staleCached, stale: true };
+      }
+
+      // No cache available - rethrow the error
       throw err;
     }
+  }
+
+  /**
+   * Increment the counter for Horizon stale fallbacks.
+   * This is a no-op if metrics are not configured.
+   */
+  private incrementHorizonStaleFallbackCounter(): void {
+    if (this.horizonStaleFallbackCounter) {
+      this.horizonStaleFallbackCounter.inc();
+    }
+    this.logger.info('horizon_status_stale_fallbacks incremented');
   }
 
   /** Build the Redis key for a transaction hash. */
