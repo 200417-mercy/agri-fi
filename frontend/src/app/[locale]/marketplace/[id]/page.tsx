@@ -43,6 +43,15 @@ const DealHealthWidget = nextDynamic(
   },
 );
 
+// Real-time collaboration presence (#1234) — client-only, connects over WebSocket.
+const CollaborationPresence = nextDynamic(
+  () => import('@/components/collaboration/CollaborationPresence').then(m => ({ default: m.CollaborationPresence })),
+  {
+    ssr: false,
+    loading: () => <div className="h-12 skeleton rounded-2xl" aria-label="Loading collaborators…" />,
+  },
+);
+
 export const dynamic = 'force-static';
 export const dynamicParams = false;
 export const revalidate = false;
@@ -173,6 +182,9 @@ export default async function DealDetailPage({ params }: { params: { id: string;
 
       <main className="min-h-screen bg-slate-50 px-4 py-8">
         <div className="max-w-4xl mx-auto space-y-5">
+
+          {/* Real-time collaboration presence — Issue #1234 */}
+          <CollaborationPresence resourceType="deal" resourceId={deal.id} />
 
           {/* Hero card */}
           <div className="card overflow-hidden">

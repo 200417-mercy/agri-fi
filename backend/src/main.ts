@@ -20,6 +20,7 @@ import {
 } from '@nestjs/common';
 import { SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { startTracing, shutdownTracing } from './tracing/tracing';
 import { buildOpenApiConfig } from './common/swagger/swagger.config';
 import { applySecurityHeaders } from './common/middleware/security-headers.middleware';
 import { Logger } from 'nestjs-pino';
@@ -31,6 +32,10 @@ import * as cookieParser from 'cookie-parser';
 import * as csrf from 'csurf';
 
 async function bootstrap() {
+  // Initialise OpenTelemetry tracing (#1233) before the Nest application (and
+  // therefore any instrumented request handling) starts.
+  startTracing();
+
   // rawBody: true preserves the unparsed request buffer on req.rawBody,
   // which is required by WebhookSignatureGuard for HMAC verification.
   //
@@ -162,6 +167,17 @@ async function bootstrap() {
   // Use the fully-configured setupSwagger (includes production Basic-Auth guard)
   // instead of the previous inline setup that had no authentication.
   setupSwagger(app);
+
+  app.enableShutdownHooks();
+
+  // Flush pending spans before the process exits (#1233).
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.on(signal, () => {
+      shutdownTracing()
+        .catch(() => undefined)
+        .finally(() => process.exit(0));
+    });
+  }
 
   const port = process.env.PORT ?? 3001;
   await app.listen(port);

@@ -1,4 +1,5 @@
 import { getAuthToken, setAuthToken, clearAuthToken } from "./auth-token";
+import { captureTraceId, traceHeaders } from "./tracing";
 
 const API_BASE = "http://localhost:3001";
 const API_VERSION = "/v1";
@@ -9,9 +10,10 @@ export async function apiFetchPublic<T>(path: string): Promise<T> {
     ? path
     : `${API_VERSION}${path}`;
   const res = await fetch(`${API_BASE}${versionedPath}`, {
-    headers: { "Content-Type": "application/json" },
+    headers: traceHeaders({ "Content-Type": "application/json" }),
     cache: "no-store",
   });
+  captureTraceId(res);
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     const err: any = new Error(body?.message ?? res.statusText);
@@ -301,13 +303,14 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`${API_BASE}${versionedPath}`, {
     ...init,
     credentials: "include",
-    headers: {
+    headers: traceHeaders({
       "Content-Type": "application/json",
       ...authHeaders(),
-      ...(init.headers ?? {}),
-    },
+      ...((init.headers as Record<string, string>) ?? {}),
+    }),
     cache: "no-store",
   });
+  captureTraceId(res);
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     const err: any = new Error(body?.message ?? res.statusText);

@@ -47,6 +47,10 @@ import { WebhooksModule } from './webhooks/webhooks.module';
 import { PublicApiModule } from './public-api/public-api.module';
 import { KycRulesModule } from './kyc-rules/kyc-rules.module';
 import { AccreditationModule } from './accreditation/accreditation.module';
+import { CollaborationModule } from './collaboration/collaboration.module';
+import { OracleModule } from './oracles/oracle.module';
+import { TracingModule } from './tracing/tracing.module';
+import { TracingMiddleware } from './tracing/tracing.middleware';
 
 @Module({
   controllers: [AppController, PublicController],
@@ -123,6 +127,9 @@ import { AccreditationModule } from './accreditation/accreditation.module';
     ReferralsModule,
     KycRulesModule,
     AccreditationModule,
+    CollaborationModule,
+    OracleModule,
+    TracingModule,
   ],
   providers: [
     {
@@ -138,9 +145,16 @@ import { AccreditationModule } from './accreditation/accreditation.module';
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     // HttpLoggerMiddleware runs first so its timer covers the full request lifecycle.
-    // ClsMiddleware MUST run before CorrelationIdMiddleware so it can safely call cls.set()
+    // ClsMiddleware MUST run before CorrelationIdMiddleware so it can safely call cls.set().
+    // TracingMiddleware extracts the W3C trace context and starts the server span,
+    // so CorrelationIdMiddleware can adopt the OpenTelemetry trace id (#1233).
     consumer
-      .apply(HttpLoggerMiddleware, ClsMiddleware, CorrelationIdMiddleware)
+      .apply(
+        HttpLoggerMiddleware,
+        ClsMiddleware,
+        TracingMiddleware,
+        CorrelationIdMiddleware,
+      )
       .forRoutes('{*splat}');
   }
 }
