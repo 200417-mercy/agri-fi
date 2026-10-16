@@ -1,7 +1,7 @@
 import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { AppController, PublicController } from './app.controller';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { LoggerModule } from 'nestjs-pino';
 import { ClsModule, ClsMiddleware } from 'nestjs-cls';
@@ -92,7 +92,9 @@ import { AccreditationModule } from './accreditation/accreditation.module';
     }),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
-      useClass: DatabaseConfig,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) =>
+        new DatabaseConfig(config).createTypeOrmOptions(),
     }),
     DatabaseModule,
     AuthModule,

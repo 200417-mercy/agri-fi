@@ -7,7 +7,7 @@ import { DatabaseConfig } from './database.config';
 /**
  * DatabaseModule bootstraps TypeORM, registers the audit subscriber, and
  * wires the live DataSource into DatabaseConfig so the connection-pool
- * monitor can run pg_stat_activity queries after the app has booted (#742).
+ * monitor can sample the driver's native pool after the app has booted (#742).
  */
 @Module({
   providers: [TradeDealAuditSubscriber, DatabaseConfig],
@@ -21,7 +21,7 @@ export class DatabaseModule implements OnModuleInit {
 
   onModuleInit(): void {
     // Hand the initialised DataSource to DatabaseConfig so its
-    // onApplicationBootstrap hook can query pg_stat_activity.
+    // onApplicationBootstrap hook can monitor the native connection pool.
     this.dbConfig.setDataSource(this.dataSource);
   }
 }
