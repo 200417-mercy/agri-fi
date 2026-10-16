@@ -31,9 +31,16 @@
     "queue:retry-dlq": "ts-node scripts/retry-dlq.ts",
     "check:env": "node scripts/check-env-coverage.js",
     "check:seed-safety": "bash scripts/verify-seed-safety.sh",
-    "check:migration-linearity": "node scripts/check-migration-linearity.js"
+    "check:migration-linearity": "node scripts/check-migration-linearity.js",
+    "migrate:status": "ts-node -r tsconfig-paths/register src/database/migration-tooling/migrate.ts status",
+    "migrate:lint": "ts-node -r tsconfig-paths/register src/database/migration-tooling/migrate.ts lint",
+    "migrate:up": "ts-node -r tsconfig-paths/register src/database/migration-tooling/migrate.ts up",
+    "migrate:down": "ts-node -r tsconfig-paths/register src/database/migration-tooling/migrate.ts down",
+    "migrate:test": "ts-node -r tsconfig-paths/register src/database/migration-tooling/migrate.ts test",
+    "migrate:restore": "ts-node -r tsconfig-paths/register src/database/migration-tooling/migrate.ts restore",
+    "migrate:history": "ts-node -r tsconfig-paths/register src/database/migration-tooling/migrate.ts history",
+    "migrate:analytics": "ts-node -r tsconfig-paths/register src/database/migration-tooling/migrate.ts analytics"
   },
-
   "dependencies": {
     "@apollo/server": "^4.11.0",
     "@as-integrations/express5": "^1.0.0",

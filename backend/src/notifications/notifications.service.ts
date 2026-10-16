@@ -140,6 +140,7 @@ export class NotificationsService {
     subject: string,
     text: string,
     html?: string,
+    options?: { replyTo?: string; headers?: Record<string, string> },
   ): Promise<void> {
     if (!this.isEnabled || !this.transporter) {
       this.logger.info(
@@ -160,6 +161,8 @@ export class NotificationsService {
         subject,
         text,
         html,
+        ...(options?.replyTo ? { replyTo: options.replyTo } : {}),
+        ...(options?.headers ? { headers: options.headers } : {}),
       });
       this.logger.info(
         { to: this.redactEmail(to), subject },
