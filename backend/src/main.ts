@@ -20,6 +20,7 @@ import {
 } from '@nestjs/common';
 import { SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { injectApplicationSecrets } from './secrets/secrets.bootstrap';
 import { buildOpenApiConfig } from './common/swagger/swagger.config';
 import { applySecurityHeaders } from './common/middleware/security-headers.middleware';
 import { Logger } from 'nestjs-pino';
@@ -31,6 +32,8 @@ import * as cookieParser from 'cookie-parser';
 import * as csrf from 'csurf';
 
 async function bootstrap() {
+  await injectApplicationSecrets();
+
   // rawBody: true preserves the unparsed request buffer on req.rawBody,
   // which is required by WebhookSignatureGuard for HMAC verification.
   //
