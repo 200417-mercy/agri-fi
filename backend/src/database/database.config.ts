@@ -14,6 +14,20 @@ export interface PoolStats {
   timestamp: string;
 }
 
+export function parseReplicaHosts(
+  raw: string,
+  defaultPort: number,
+): Array<{ host: string; port: number }> {
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [host, port] = entry.split(':');
+      return { host, port: port ? parseInt(port, 10) : defaultPort };
+    });
+}
+
 @Injectable()
 export class DatabaseConfig
   implements TypeOrmOptionsFactory, OnApplicationBootstrap
@@ -33,19 +47,21 @@ export class DatabaseConfig
 
     // Falls back to the primary when no replica is configured, so read
     // queries stay correct in environments without one (local/dev).
-    const replicaConnection = {
-      ...masterConnection,
-      host: this.config.get<string>(
-        'DATABASE_REPLICA_HOST',
-        masterConnection.host,
-      ),
-    };
+    // DATABASE_REPLICA_HOSTS (comma-separated, optional `host:port`) enables
+    // multiple read replicas; TypeORM's pg driver round-robins reads across
+    // them. Falls back to DATABASE_REPLICA_HOST, then the primary (#1238).
+    const replicaConnections = parseReplicaHosts(
+      this.config.get<string>('DATABASE_REPLICA_HOSTS') ??
+        this.config.get<string>('DATABASE_REPLICA_HOST', masterConnection.host),
+      masterConnection.port,
+    ).map(({ host, port }) => ({ ...masterConnection, host, port }));
 
     return {
       type: 'postgres',
       replication: {
         master: masterConnection,
-        slaves: [replicaConnection],
+        slaves: replicaConnections,
+        selector: 'RR',
       },
       entities: [join(__dirname, '..', '**', '*.entity.{ts,js}')],
       migrations: [join(__dirname, 'migrations', '*.{ts,js}')],
