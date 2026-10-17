@@ -20,6 +20,7 @@ import {
 } from '@nestjs/common';
 import { SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { injectApplicationSecrets } from './secrets/secrets.bootstrap';
 import { startTracing, shutdownTracing } from './tracing/tracing';
 import { buildOpenApiConfig } from './common/swagger/swagger.config';
 import { applySecurityHeaders } from './common/middleware/security-headers.middleware';
@@ -32,6 +33,7 @@ import * as cookieParser from 'cookie-parser';
 import * as csrf from 'csurf';
 
 async function bootstrap() {
+  await injectApplicationSecrets();
   // Initialise OpenTelemetry tracing (#1233) before the Nest application (and
   // therefore any instrumented request handling) starts.
   startTracing();

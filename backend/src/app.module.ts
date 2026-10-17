@@ -1,7 +1,7 @@
 import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { AppController, PublicController } from './app.controller';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { LoggerModule } from 'nestjs-pino';
 import { ClsModule, ClsMiddleware } from 'nestjs-cls';
@@ -44,9 +44,11 @@ import { SettlementModule } from './settlement/settlement.module';
 import { SearchModule } from './search/search.module';
 import { UpgradeModule } from './upgrade/upgrade.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
+import { SecretsModule } from './secrets/secrets.module';
 import { PublicApiModule } from './public-api/public-api.module';
 import { KycRulesModule } from './kyc-rules/kyc-rules.module';
 import { AccreditationModule } from './accreditation/accreditation.module';
+import { ChatModule } from './chat/chat.module';
 import { CollaborationModule } from './collaboration/collaboration.module';
 import { OracleModule } from './oracles/oracle.module';
 import { TracingModule } from './tracing/tracing.module';
@@ -96,7 +98,9 @@ import { PlatformIntegrationsModule } from './platform-integrations/platform-int
     }),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
-      useClass: DatabaseConfig,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) =>
+        new DatabaseConfig(config).createTypeOrmOptions(),
     }),
     DatabaseModule,
     AuthModule,
@@ -124,10 +128,12 @@ import { PlatformIntegrationsModule } from './platform-integrations/platform-int
     SearchModule,
     UpgradeModule,
     WebhooksModule,
+    SecretsModule,
     PublicApiModule,
     ReferralsModule,
     KycRulesModule,
     AccreditationModule,
+    ChatModule,
     CollaborationModule,
     OracleModule,
     TracingModule,

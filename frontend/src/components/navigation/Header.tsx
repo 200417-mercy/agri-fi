@@ -71,6 +71,7 @@ export const Header: React.FC<HeaderProps> = ({ user, onLogout }) => {
     { label: t('nav.dashboard'), href: `/dashboard/${user.role}` },
     { label: t('nav.marketplace'), href: '/marketplace' },
     { label: t('nav.documents'), href: '/dashboard/documents' },
+    { label: 'Messages', href: '/dashboard/messages' },
     { label: t('nav.settings'), href: '/settings' },
   ];
 

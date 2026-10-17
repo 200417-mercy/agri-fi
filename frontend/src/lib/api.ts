@@ -1,7 +1,8 @@
 import { getAuthToken, setAuthToken, clearAuthToken } from "./auth-token";
 import { captureTraceId, traceHeaders } from "./tracing";
 
-const API_BASE = "http://localhost:3001";
+export const API_BASE =
+  (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001").replace(/\/+$/, "");
 const API_VERSION = "/v1";
 
 // ── Public (no-auth) fetch helper — used by ActivityFeed and other public endpoints ──
@@ -303,6 +304,10 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`${API_BASE}${versionedPath}`, {
     ...init,
     credentials: "include",
+    headers: {
+      ...(typeof FormData !== "undefined" && init.body instanceof FormData
+        ? {}
+        : { "Content-Type": "application/json" }),
     headers: traceHeaders({
       "Content-Type": "application/json",
       ...authHeaders(),
@@ -320,7 +325,69 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   return res.json();
 }
 
+async function apiBlob(path: string): Promise<Blob> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    credentials: "include",
+    headers: authHeaders(),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body?.message ?? res.statusText);
+  }
+  return res.blob();
+}
+
 // ── Stateful API client (used by dashboard / login pages) ────────────────────
+
+export interface ChatParticipant {
+  userId: string;
+  email?: string;
+  role?: User["role"];
+  lastReadAt?: string | null;
+  self?: boolean;
+}
+
+export interface ChatAttachment {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  downloadUrl: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  senderEmail?: string;
+  content: string;
+  replyToId: string | null;
+  replyTo: { id: string; content: string; senderEmail?: string } | null;
+  reactions: Record<string, string[]>;
+  createdAt: string;
+  readBy: string[];
+  attachments: ChatAttachment[];
+}
+
+export interface ChatConversation {
+  id: string;
+  kind: "direct" | "group";
+  name: string | null;
+  dealId: string | null;
+  createdAt: string;
+  participants: ChatParticipant[];
+  lastMessage?: ChatMessage | null;
+  unreadCount?: number;
+}
+
+export interface ChatAnalytics {
+  periodDays: number;
+  conversationCount: number;
+  sent: number;
+  received: number;
+  dailyActivity: Array<{ day: string; sent: number; received: number }>;
+}
 
 export const apiClient = {
   /** Call POST /auth/login, store the returned JWT, and return the token. */
@@ -482,6 +549,77 @@ export const apiClient = {
   // GET /trade-deals/:id/esg-score
   async getDealEsgScore(dealId: string): Promise<any> {
     return apiFetch(`/trade-deals/${dealId}/esg-score`);
+  },
+
+  getChatConversations(): Promise<ChatConversation[]> {
+    return apiFetch("/chat/conversations");
+  },
+
+  createChatConversation(input: {
+    participantIds: string[];
+    name?: string;
+    dealId?: string;
+  }): Promise<ChatConversation> {
+    return apiFetch("/chat/conversations", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  },
+
+  searchChatContacts(query: string): Promise<Array<Pick<User, "id" | "email" | "role">>> {
+    return apiFetch(`/chat/contacts?q=${encodeURIComponent(query)}`);
+  },
+
+  getChatMessages(conversationId: string): Promise<ChatMessage[]> {
+    return apiFetch(`/chat/conversations/${encodeURIComponent(conversationId)}/messages`);
+  },
+
+  searchChatMessages(conversationId: string, query: string): Promise<ChatMessage[]> {
+    return apiFetch(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/search?q=${encodeURIComponent(query)}`,
+    );
+  },
+
+  sendChatMessage(
+    conversationId: string,
+    content: string,
+    replyToId?: string,
+  ): Promise<ChatMessage> {
+    return apiFetch(`/chat/conversations/${encodeURIComponent(conversationId)}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content, replyToId }),
+    });
+  },
+
+  markChatRead(conversationId: string): Promise<{ lastReadAt: string }> {
+    return apiFetch(`/chat/conversations/${encodeURIComponent(conversationId)}/read`, {
+      method: "POST",
+      body: "{}",
+    });
+  },
+
+  reactToChatMessage(messageId: string, emoji: string): Promise<ChatMessage> {
+    return apiFetch(`/chat/messages/${encodeURIComponent(messageId)}/reactions`, {
+      method: "POST",
+      body: JSON.stringify({ emoji }),
+    });
+  },
+
+  uploadChatAttachment(conversationId: string, file: File): Promise<ChatMessage> {
+    const form = new FormData();
+    form.append("file", file);
+    return apiFetch(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/attachments`,
+      { method: "POST", body: form },
+    );
+  },
+
+  downloadChatAttachment(downloadUrl: string): Promise<Blob> {
+    return apiBlob(downloadUrl);
+  },
+
+  getChatAnalytics(): Promise<ChatAnalytics> {
+    return apiFetch("/chat/analytics");
   },
 };
 
