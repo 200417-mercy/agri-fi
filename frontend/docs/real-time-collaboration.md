@@ -96,6 +96,8 @@ when a PDF is opened.
 | `typing` | `{ resourceType, resourceId, isTyping }` | |
 | `activity_ping` | `{ resourceType, resourceId }` | Heartbeat (every 30 s) |
 | `set_presence_visibility` | `{ resourceType, resourceId, visible }` | Privacy toggle |
+| `screen_share_signal` | `{ resourceType, resourceId, type, data }` | WebRTC offer, answer, or ICE candidate |
+| `screen_share_annotation` | `{ resourceType, resourceId, points, color? }` | Normalized drawing stroke, max 500 points |
 
 ### Server → client
 
@@ -107,6 +109,8 @@ when a PDF is opened.
 | `activity_status` | `{ userId, status }` | `active` \| `idle` \| `typing` |
 | `collaborator_joined` | `{ user }` | Also persisted as a notification |
 | `collaborator_left` | `{ userId, displayName }` | Also persisted as a notification |
+| `screen_share_signal` | `{ type, data, from }` | Forwarded to other room members |
+| `screen_share_annotation` | `{ points, color, from }` | Forwarded drawing stroke |
 
 A participant is marked **idle** after 90 s without activity
 (`PRESENCE_IDLE_MS`). A remote cursor disappears 6 s after its last update

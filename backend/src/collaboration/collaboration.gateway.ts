@@ -274,6 +274,39 @@ export class CollaborationGateway
     }
   }
 
+  @SubscribeMessage('screen_share_signal')
+  onScreenShareSignal(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() payload: { resourceType: CollaborationResourceType; resourceId: string; type: 'offer' | 'answer' | 'ice'; data: unknown },
+  ): void {
+    const roomKey = PresenceService.roomKey(
+      CollaborationService.normalizeResourceType(payload.resourceType),
+      payload.resourceId,
+    );
+    client.to(roomKey).emit('screen_share_signal', {
+      type: payload.type,
+      data: payload.data,
+      from: client.data.user?.sub,
+    });
+  }
+
+  @SubscribeMessage('screen_share_annotation')
+  onScreenShareAnnotation(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() payload: { resourceType: CollaborationResourceType; resourceId: string; points: Array<{ x: number; y: number }>; color?: string },
+  ): void {
+    const roomKey = PresenceService.roomKey(
+      CollaborationService.normalizeResourceType(payload.resourceType),
+      payload.resourceId,
+    );
+    if (payload.points.length > 500) return;
+    client.to(roomKey).emit('screen_share_annotation', {
+      points: payload.points,
+      color: payload.color ?? '#f59e0b',
+      from: client.data.user?.sub,
+    });
+  }
+
   @SubscribeMessage('set_presence_visibility')
   async onSetVisibility(
     @ConnectedSocket() client: AuthedSocket,

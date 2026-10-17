@@ -51,6 +51,7 @@ import { CollaborationModule } from './collaboration/collaboration.module';
 import { OracleModule } from './oracles/oracle.module';
 import { TracingModule } from './tracing/tracing.module';
 import { TracingMiddleware } from './tracing/tracing.middleware';
+import { PlatformIntegrationsModule } from './platform-integrations/platform-integrations.module';
 
 @Module({
   controllers: [AppController, PublicController],
@@ -130,6 +131,7 @@ import { TracingMiddleware } from './tracing/tracing.middleware';
     CollaborationModule,
     OracleModule,
     TracingModule,
+    PlatformIntegrationsModule,
   ],
   providers: [
     {
