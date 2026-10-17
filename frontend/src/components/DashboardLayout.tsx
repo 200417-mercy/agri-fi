@@ -8,6 +8,7 @@ import { Header } from "./navigation/Header";
 import KycStatusBanner from "./dashboard/KycStatusBanner";
 import { DashboardTourWrapper } from "./DashboardTourWrapper";
 import SearchBar from "./SearchBar";
+import CallProvider from "./calling/CallProvider";
 
 /* ── Nav config ───────────────────────────────────────────────────────────── */
 interface NavItem {
@@ -26,6 +27,8 @@ const farmerNav: NavItem[] = [
   },
   { label: "Marketplace", href: "/marketplace", icon: <ShopIcon /> },
   { label: "Referrals", href: "/dashboard/referrals", icon: <ReferralIcon /> },
+  { label: "Board", href: "/dashboard/kanban", icon: <DocsIcon /> },
+  { label: "Calls", href: "/dashboard/calls", icon: <ReferralIcon /> },
 ];
 const traderNav: NavItem[] = [
   {
@@ -36,6 +39,8 @@ const traderNav: NavItem[] = [
   },
   { label: "Marketplace", href: "/marketplace", icon: <ShopIcon /> },
   { label: "Referrals", href: "/dashboard/referrals", icon: <ReferralIcon /> },
+  { label: "Board", href: "/dashboard/kanban", icon: <DocsIcon /> },
+  { label: "Calls", href: "/dashboard/calls", icon: <ReferralIcon /> },
 ];
 const investorNav: NavItem[] = [
   {
@@ -46,6 +51,8 @@ const investorNav: NavItem[] = [
   },
   { label: "Marketplace", href: "/marketplace", icon: <ShopIcon /> },
   { label: "Referrals", href: "/dashboard/referrals", icon: <ReferralIcon /> },
+  { label: "Board", href: "/dashboard/kanban", icon: <DocsIcon /> },
+  { label: "Calls", href: "/dashboard/calls", icon: <ReferralIcon /> },
 ];
 const adminNav: NavItem[] = [
   {
@@ -71,6 +78,8 @@ const adminNav: NavItem[] = [
   },
   { label: "Marketplace", href: "/marketplace", icon: <ShopIcon /> },
   { label: "Referrals", href: "/dashboard/referrals", icon: <ReferralIcon /> },
+  { label: "Board", href: "/dashboard/kanban", icon: <DocsIcon /> },
+  { label: "Calls", href: "/dashboard/calls", icon: <ReferralIcon /> },
 ];
 
 function navForRole(role: string): NavItem[] {
@@ -299,7 +308,7 @@ export default function DashboardLayout({ user, children }: Props) {
           <div className="px-6 pt-6 max-w-7xl mx-auto">
             <KycStatusBanner />
           </div>
-          {children}
+          <CallProvider>{children}</CallProvider>
         </main>
       </div>
 
