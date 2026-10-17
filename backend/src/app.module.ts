@@ -48,6 +48,7 @@ import { SecretsModule } from './secrets/secrets.module';
 import { PublicApiModule } from './public-api/public-api.module';
 import { KycRulesModule } from './kyc-rules/kyc-rules.module';
 import { AccreditationModule } from './accreditation/accreditation.module';
+import { ChatModule } from './chat/chat.module';
 
 @Module({
   controllers: [AppController, PublicController],
@@ -127,6 +128,7 @@ import { AccreditationModule } from './accreditation/accreditation.module';
     ReferralsModule,
     KycRulesModule,
     AccreditationModule,
+    ChatModule,
   ],
   providers: [
     {
