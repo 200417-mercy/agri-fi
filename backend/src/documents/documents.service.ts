@@ -29,6 +29,7 @@ import {
   WatermarkService,
   WatermarkOptions,
 } from './watermark.service';
+import { DocumentClassificationService } from './document-classification.service';
 
 const ALLOWED_MIME_TYPES = ['application/pdf', 'image/png', 'image/jpeg'];
 
@@ -55,6 +56,7 @@ export class DocumentsService {
     private readonly config: ConfigService,
     private readonly clamScanService: ClamScanService,
     private readonly auditService: AuditService,
+    private readonly classificationService: DocumentClassificationService,
     @Optional() private readonly watermarkService?: WatermarkService,
   ) {}
 
@@ -405,8 +407,11 @@ export class DocumentsService {
       signatureVerified,
     });
 
+    await this.classificationService.classify(doc, file.buffer, file.originalname);
+    const classifiedDocument = await this.tradeDealsService.getDocument(doc.id);
+
     return {
-      ...doc,
+      ...(classifiedDocument ?? doc),
       verificationUrl: this.stellarService.getVerificationUrl(stellarTxId),
     };
   }

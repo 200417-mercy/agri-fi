@@ -105,7 +105,12 @@ async function bootstrap() {
   const csrfProtection = csrf({
     cookie: { httpOnly: true, sameSite: 'strict' },
   });
-  app.use(csrfProtection);
+  app.use((req: any, res: any, next: () => void) => {
+    if (req.path === '/v1/edge/heartbeat' || req.path === '/v1/edge/sync') {
+      return next();
+    }
+    csrfProtection(req, res, next);
+  });
 
   // Expose CSRF token so clients can fetch it before mutating requests
   app.use('/csrf-token', (req: any, res: any) => {
