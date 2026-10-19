@@ -98,6 +98,67 @@ export class NotificationsService {
     return this.notificationRepo.save(notification);
   }
 
+  /**
+   * Creates a notification when a portfolio's simulated loss under a stress
+   * scenario exceeds the configured loss threshold.
+   */
+  async createStressTestAlert(params: {
+    userId: string;
+    portfolioId: string;
+    scenarioId: string;
+    scenarioName: string;
+    lossAmount: number;
+    lossPercentage: number;
+    thresholdAmount: number;
+    currency?: string;
+    reportUrl?: string;
+    metadataJson?: Record<string, unknown>;
+  }): Promise<NotificationEntity> {
+    const currency = params.currency ?? 'USD';
+    const formattedLoss = `${params.lossAmount.toFixed(2)} ${currency}`;
+    const formattedThreshold = `${params.thresholdAmount.toFixed(2)} ${currency}`;
+    const formattedPercentage = `${params.lossPercentage.toFixed(2)}%`;
+
+    const title = `Stress test alert: ${params.scenarioName}`;
+    const message =
+      `Portfolio ${params.portfolioId} simulated a loss of ${formattedLoss} ` +
+      `(${formattedPercentage}) under scenario "${params.scenarioName}", ` +
+      `exceeding the configured threshold of ${formattedThreshold}.`;
+
+    const linkUrl =
+      params.reportUrl ??
+      `/stress-tests/reports/${params.scenarioId}?portfolioId=${params.portfolioId}`;
+
+    this.logger.warn(
+      {
+        userId: params.userId,
+        portfolioId: params.portfolioId,
+        scenarioId: params.scenarioId,
+        lossAmount: params.lossAmount,
+        thresholdAmount: params.thresholdAmount,
+      },
+      `Stress test loss threshold exceeded for portfolio ${params.portfolioId}`,
+    );
+
+    return this.createNotification({
+      userId: params.userId,
+      type: NotificationType.STRESS_TEST_ALERT,
+      title,
+      message,
+      linkUrl,
+      metadataJson: {
+        portfolioId: params.portfolioId,
+        scenarioId: params.scenarioId,
+        scenarioName: params.scenarioName,
+        lossAmount: params.lossAmount,
+        lossPercentage: params.lossPercentage,
+        thresholdAmount: params.thresholdAmount,
+        currency,
+        ...(params.metadataJson ?? {}),
+      },
+    });
+  }
+
   async getUserNotifications(
     userId: string,
     limit = 10,

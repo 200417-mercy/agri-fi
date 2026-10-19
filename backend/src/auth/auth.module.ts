@@ -30,6 +30,8 @@ import { SettlementModule } from '../settlement/settlement.module';
 import { DocumentsModule } from '../documents/documents.module';
 import { EmailSequenceModule } from '../email-sequence/email-sequence.module';
 import { KycRulesModule } from '../kyc-rules/kyc-rules.module';
+import { BehavioralProfile } from '../database/entities/behavioral-profile.entity';
+import { BehavioralRiskService } from './behavioral-risk.service';
 
 @Module({
   imports: [
@@ -41,6 +43,7 @@ import { KycRulesModule } from '../kyc-rules/kyc-rules.module';
       LoginLog,
       AdminAction,
       SecurityIpBlock,
+      BehavioralProfile,
     ]),
     ConfigModule,
     QueueModule,
@@ -74,6 +77,7 @@ import { KycRulesModule } from '../kyc-rules/kyc-rules.module';
     SecurityThreatService,
     OfacSanctionsCheckService,
     KycCronService,
+    BehavioralRiskService,
   ],
   exports: [
     AuthService,
@@ -86,6 +90,7 @@ import { KycRulesModule } from '../kyc-rules/kyc-rules.module';
     TokenBlocklistService,
     SecurityThreatService,
     OfacSanctionsCheckService,
+    BehavioralRiskService,
   ],
 })
 export class AuthModule {}

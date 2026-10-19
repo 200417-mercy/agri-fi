@@ -54,6 +54,7 @@ import { OracleModule } from './oracles/oracle.module';
 import { TracingModule } from './tracing/tracing.module';
 import { TracingMiddleware } from './tracing/tracing.middleware';
 import { PlatformIntegrationsModule } from './platform-integrations/platform-integrations.module';
+import { StressTestingModule } from './stress-testing/stress-testing.module';
 
 @Module({
   controllers: [AppController, PublicController],
@@ -138,6 +139,7 @@ import { PlatformIntegrationsModule } from './platform-integrations/platform-int
     OracleModule,
     TracingModule,
     PlatformIntegrationsModule,
+    StressTestingModule,
   ],
   providers: [
     {

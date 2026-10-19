@@ -24,6 +24,7 @@ import { MarketplaceSettlementController } from './marketplace-settlement.contro
 import { TaxReportService } from './tax-report.service';
 import { ReceiptService } from './receipt.service';
 import { AccreditationModule } from '../accreditation/accreditation.module';
+import { StressTestingModule } from '../stress-testing/stress-testing.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { AccreditationModule } from '../accreditation/accreditation.module';
     ReferralModule,
     AuthModule,
     AccreditationModule,
+    StressTestingModule,
   ],
   controllers: [
     InvestmentsController,
