@@ -4,6 +4,7 @@ import { ThemeProvider } from "@/components/ThemeProvider";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { ToastProvider } from "@/components/ui/ToastProvider";
 import { PWAInstallBanner } from "@/components/PWAInstallBanner";
+import { BehavioralBiometricsProvider } from "@/components/behavioral/BehavioralBiometricsProvider";
 
 export const metadata: Metadata = {
   title: "AgriFi — Agricultural Finance Platform",
@@ -63,13 +64,15 @@ export default function RootLayout({
           disableTransitionOnChange
         >
           <ToastProvider>
-            <PWAInstallBanner />
-            <div className="pointer-events-none fixed right-4 top-4 z-[90] sm:right-6 sm:top-6">
-              <div className="pointer-events-auto">
-                <ThemeToggle />
+            <BehavioralBiometricsProvider>
+              <PWAInstallBanner />
+              <div className="pointer-events-none fixed right-4 top-4 z-[90] sm:right-6 sm:top-6">
+                <div className="pointer-events-auto">
+                  <ThemeToggle />
+                </div>
               </div>
-            </div>
-            {children}
+              {children}
+            </BehavioralBiometricsProvider>
           </ToastProvider>
         </ThemeProvider>
       </body>
