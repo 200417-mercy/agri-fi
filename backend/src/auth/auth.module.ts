@@ -10,6 +10,9 @@ import { JwtStrategy } from './jwt.strategy';
 import { GoogleStrategy } from './google.strategy';
 import { User } from './entities/user.entity';
 import { KycSubmission } from './entities/kyc-submission.entity';
+import { BiometricCredential } from './entities/biometric-credential.entity';
+import { BiometricController } from './biometric.controller';
+import { BiometricService } from './biometric.service';
 import { KycGuard, RolesGuard } from '../common/guards';
 import { QueueModule } from '../queue/queue.module';
 import { NotificationsModule } from '../notifications/notifications.module';
@@ -44,6 +47,7 @@ import { BehavioralRiskService } from './behavioral-risk.service';
       AdminAction,
       SecurityIpBlock,
       BehavioralProfile,
+      BiometricCredential,
     ]),
     ConfigModule,
     QueueModule,
@@ -64,9 +68,10 @@ import { BehavioralRiskService } from './behavioral-risk.service';
       }),
     }),
   ],
-  controllers: [AuthController, AdminController],
+  controllers: [AuthController, AdminController, BiometricController],
   providers: [
     AuthService,
+    BiometricService,
     JwtStrategy,
     GoogleStrategy,
     KycGuard,
@@ -81,6 +86,7 @@ import { BehavioralRiskService } from './behavioral-risk.service';
   ],
   exports: [
     AuthService,
+    BiometricService,
     JwtModule,
     TypeOrmModule,
     KycGuard,
