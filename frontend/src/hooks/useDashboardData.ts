@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react';
-import { apiClient, Investment, User } from '../lib/api';
+import { useEffect, useState } from "react";
+import { apiClient, Investment, User } from "../lib/api";
 import {
   behavioralBiometrics,
   BehavioralAnalytics,
   RiskLevel,
-} from '../lib/behavioralBiometrics';
+} from "../lib/behavioralBiometrics";
 
-const CACHE_KEY_PREFIX = 'dashboard_data_';
+const CACHE_KEY_PREFIX = "dashboard_data_";
 
 // Risk score (0-100) at or above which we proactively re-authenticate.
 const REAUTH_RISK_THRESHOLD = 70;
@@ -32,7 +32,6 @@ export interface UseDashboardDataReturn {
   /** Manually acknowledge the re-auth prompt after the user re-authenticates. */
   acknowledgeReauth: () => void;
 }
-=======
 
 function cacheKey(userId: string): string {
   return `${CACHE_KEY_PREFIX}${userId}`;
@@ -62,7 +61,7 @@ export function useDashboardData(): UseDashboardDataReturn {
   const [error, setError] = useState<string | null>(null);
   const [isOffline, setIsOffline] = useState(false);
   const [riskScore, setRiskScore] = useState(0);
-  const [riskLevel, setRiskLevel] = useState<RiskLevel>('low');
+  const [riskLevel, setRiskLevel] = useState<RiskLevel>("low");
   const [requiresReauth, setRequiresReauth] = useState(false);
   const [behavioralAnalytics, setBehavioralAnalytics] =
     useState<BehavioralAnalytics | null>(null);
@@ -102,7 +101,11 @@ export function useDashboardData(): UseDashboardDataReturn {
             // Keep showing the cached data; just flag it as stale.
             setIsOffline(true);
           } else {
-            setError(err instanceof Error ? err.message : 'Failed to load dashboard data');
+            setError(
+              err instanceof Error
+                ? err.message
+                : "Failed to load dashboard data",
+            );
           }
         }
       } finally {
