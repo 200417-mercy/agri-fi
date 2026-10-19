@@ -471,4 +471,99 @@ export class TradeDealsController {
       body.adjustedScore,
     );
   }
+
+  @Post(':id/esg-data')
+  @UseGuards(AuthGuard('jwt'), RolesGuard, KycGuard)
+  @Roles('trader', 'farmer')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({ summary: 'Update or collect specific ESG data metrics for a deal' })
+  @ApiParam({ name: 'id', description: 'Trade deal UUID' })
+  async collectDealEsgData(
+    @Param('id') id: string,
+    @Request() req: AuthRequest,
+    @Body() dto: Partial<EsgQuestionnaireDto>,
+  ) {
+    return this.esgScoringService.collectDealEsgData(id, req.user.id, dto);
+  }
+
+  @Get('esg/portfolio/summary')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth('jwt')
+  @ApiOperation({ summary: 'Get aggregate portfolio ESG score and distribution for authenticated investor' })
+  async getPortfolioEsgSummary(@Request() req: AuthRequest) {
+    return this.esgScoringService.aggregatePortfolioEsg(req.user.id);
+  }
+
+  @Get('esg/benchmarks')
+  @ApiOperation({ summary: 'Get agricultural industry ESG benchmarks (SASB FB-AG / GRI 13)' })
+  @ApiQuery({ name: 'commodity', required: false })
+  async getEsgBenchmarks(@Query('commodity') commodity?: string) {
+    return this.esgScoringService.getIndustryBenchmarks(commodity);
+  }
+
+  @Get(':id/esg-benchmark')
+  @ApiOperation({ summary: 'Benchmark a deal against SASB/GRI agricultural standards' })
+  @ApiParam({ name: 'id', description: 'Trade deal UUID' })
+  async benchmarkDeal(@Param('id') id: string) {
+    return this.esgScoringService.benchmarkDeal(id);
+  }
+
+  @Get(':id/esg-report')
+  @ApiOperation({ summary: 'Generate structured ESG disclosure report for a deal' })
+  @ApiParam({ name: 'id', description: 'Trade deal UUID' })
+  @ApiQuery({ name: 'type', required: false, enum: ['investor', 'regulator'] })
+  async getDealEsgReport(
+    @Param('id') id: string,
+    @Query('type') type?: 'investor' | 'regulator',
+  ) {
+    return this.esgScoringService.generateEsgReport({
+      dealId: id,
+      reportType: type || 'investor',
+    });
+  }
+
+  @Get('esg/reports/portfolio')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth('jwt')
+  @ApiOperation({ summary: 'Generate structured ESG disclosure report for investor portfolio' })
+  @ApiQuery({ name: 'type', required: false, enum: ['investor', 'regulator'] })
+  async getPortfolioEsgReport(
+    @Request() req: AuthRequest,
+    @Query('type') type?: 'investor' | 'regulator',
+  ) {
+    return this.esgScoringService.generateEsgReport({
+      investorId: req.user.id,
+      reportType: type || 'investor',
+    });
+  }
+
+  @Get(':id/esg-optimization')
+  @ApiOperation({ summary: 'Get targeted ESG improvement suggestions and score uplift estimates' })
+  @ApiParam({ name: 'id', description: 'Trade deal UUID' })
+  async getEsgOptimizationSuggestions(@Param('id') id: string) {
+    return this.esgScoringService.getOptimizationSuggestions(id);
+  }
+
+  @Post(':id/esg-certify')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin', 'compliance_officer')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({ summary: 'Issue cryptographic ESG certificate for eligible high-ESG deal (Admin only)' })
+  @ApiParam({ name: 'id', description: 'Trade deal UUID' })
+  async certifyDeal(@Param('id') id: string, @Request() req: AuthRequest) {
+    return this.esgScoringService.certifyDeal(id, req.user.id);
+  }
+
+  @Get(':id/esg-certificate')
+  @ApiOperation({ summary: 'Retrieve verified ESG certificate for a deal' })
+  @ApiParam({ name: 'id', description: 'Trade deal UUID' })
+  async getDealCertificate(@Param('id') id: string) {
+    return this.esgScoringService.getDealCertificate(id);
+  }
+
+  @Get('esg/analytics')
+  @ApiOperation({ summary: 'Platform-level ESG analytics, rating distributions, and financial return correlations' })
+  async getEsgAnalytics() {
+    return this.esgScoringService.getEsgAnalytics();
+  }
 }

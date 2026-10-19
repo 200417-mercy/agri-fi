@@ -47,6 +47,8 @@ function isPgPool(value: unknown): value is PgPoolLike {
     typeof pool.on === 'function' &&
     typeof pool.off === 'function'
   );
+}
+
 export function parseReplicaHosts(
   raw: string,
   defaultPort: number,

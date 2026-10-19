@@ -25,6 +25,9 @@ import { TaxReportService } from './tax-report.service';
 import { ReceiptService } from './receipt.service';
 import { AccreditationModule } from '../accreditation/accreditation.module';
 import { StressTestingModule } from '../stress-testing/stress-testing.module';
+import { LiquidityRiskService } from './liquidity-risk.service';
+import { LiquidityRiskController } from './liquidity-risk.controller';
+import { LiquiditySnapshot } from './entities/liquidity-snapshot.entity';
 
 @Module({
   imports: [
@@ -38,6 +41,7 @@ import { StressTestingModule } from '../stress-testing/stress-testing.module';
       User,
       FeeConfiguration,
       PaymentDistribution,
+      LiquiditySnapshot,
     ]),
     StellarModule,
     QueueModule,
@@ -51,6 +55,7 @@ import { StressTestingModule } from '../stress-testing/stress-testing.module';
     FeeConfigurationController,
     MarketplaceSettlementController,
     AutoInvestController,
+    LiquidityRiskController,
   ],
   providers: [
     InvestmentsService,
@@ -65,6 +70,7 @@ import { StressTestingModule } from '../stress-testing/stress-testing.module';
     SecondaryOrderMatchingService,
     AutoInvestService,
     RiskScoringService,
+    LiquidityRiskService,
   ],
   exports: [
     InvestmentsService,
@@ -75,6 +81,7 @@ import { StressTestingModule } from '../stress-testing/stress-testing.module';
     MarketplaceSettlementService,
     SecondaryOrderMatchingService,
     AutoInvestService,
+    LiquidityRiskService,
   ],
 })
 export class InvestmentsModule {}
