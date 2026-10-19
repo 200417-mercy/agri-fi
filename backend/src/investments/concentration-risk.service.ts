@@ -74,6 +74,44 @@ export class ConcentrationRiskService {
   }
 
   /**
+   * Returns exposure weights grouped by commodity and region for a supplied
+   * investment list. Used by the stress-testing simulation to apply scenario
+   * shocks by commodity and region without duplicating roll-up logic.
+   */
+  getExposureWeights(investments: Investment[]): {
+    totalPortfolioUsd: number;
+    byCommodity: ConcentrationBreakdown[];
+    byRegion: ConcentrationBreakdown[];
+  } {
+    const totalPortfolioUsd = investments.reduce(
+      (sum, inv) => sum + Number(inv.amountUsd),
+      0,
+    );
+
+    if (totalPortfolioUsd === 0) {
+      return { totalPortfolioUsd: 0, byCommodity: [], byRegion: [] };
+    }
+
+    const byCommodity = this.rollUp(
+      investments,
+      (inv) => inv.tradeDeal?.commodity?.toLowerCase() ?? 'unknown',
+      (inv) => inv.tradeDeal?.commodity ?? 'Unknown',
+      totalPortfolioUsd,
+      DEFAULT_THRESHOLDS.commodity,
+    );
+
+    const byRegion = this.rollUp(
+      investments,
+      (inv) => inv.tradeDeal?.farmLocation?.toLowerCase() ?? 'unknown',
+      (inv) => inv.tradeDeal?.farmLocation ?? 'Unknown',
+      totalPortfolioUsd,
+      DEFAULT_THRESHOLDS.region,
+    );
+
+    return { totalPortfolioUsd, byCommodity, byRegion };
+  }
+
+  /**
    * Pure computation path — accepts pre-loaded investments so callers (and
    * tests) can avoid a real DB round-trip.
    */

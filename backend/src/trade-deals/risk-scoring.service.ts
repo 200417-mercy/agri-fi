@@ -33,7 +33,7 @@ const WEIGHTS = {
 };
 
 // Commodity volatility baseline (0-100 scale, higher = more volatile)
-const COMMODITY_VOLATILITY: Record<string, number> = {
+export const COMMODITY_VOLATILITY: Record<string, number> = {
   cocoa: 45,
   coffee: 50,
   maize: 35,
@@ -237,6 +237,29 @@ export class RiskScoringService {
     if (fundingRatio >= 0.5) return 45;
     if (fundingRatio >= 0.25) return 65;
     return 85;
+  }
+
+  /**
+   * Public accessor for the commodity volatility baselines so that other
+   * services (e.g. stress testing) can derive shock magnitudes from the
+   * same risk parameters used for scoring.
+   */
+  getCommodityVolatilityBaseline(commodity: string): number {
+    return this.scoreCommodityVolatility(commodity);
+  }
+
+  /**
+   * Public accessor returning a copy of the full commodity volatility map.
+   */
+  getCommodityVolatilityMap(): Record<string, number> {
+    return { ...COMMODITY_VOLATILITY };
+  }
+
+  /**
+   * Public wrapper around the score-to-rating mapping.
+   */
+  getRating(score: number): 'Low' | 'Medium' | 'High' | 'Very High' {
+    return this.scoreToRating(score);
   }
 
   private scoreToRating(

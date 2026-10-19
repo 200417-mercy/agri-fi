@@ -621,7 +621,48 @@ export const apiClient = {
   getChatAnalytics(): Promise<ChatAnalytics> {
     return apiFetch("/chat/analytics");
   },
+
+  // POST /auth/behavioral/risk — submit only the computed risk score and
+  // anomaly flags. Raw behavioral data (keystroke/mouse/usage samples) never
+  // leaves the device; only derived, non-reversible signals are sent.
+  async submitBehavioralRisk(payload: {
+    riskScore: number;
+    anomalyFlags: string[];
+    confidence?: number;
+    sampledAt?: string;
+  }): Promise<{ riskScore: number; action: "allow" | "challenge" | "block" }> {
+    return apiFetch("/auth/behavioral/risk", {
+      method: "POST",
+      body: JSON.stringify({
+        riskScore: payload.riskScore,
+        anomalyFlags: payload.anomalyFlags,
+        confidence: payload.confidence,
+        sampledAt: payload.sampledAt ?? new Date().toISOString(),
+      }),
+    });
+  },
+
+  // GET /auth/behavioral/analytics — behavioral authentication accuracy and
+  // false-positive metrics for the current user.
+  async getBehavioralAnalytics(): Promise<BehavioralAnalytics> {
+    return apiFetch("/auth/behavioral/analytics");
+  },
 };
+
+export interface BehavioralAnalytics {
+  periodDays: number;
+  totalSamples: number;
+  truePositives: number;
+  falsePositives: number;
+  trueNegatives: number;
+  falseNegatives: number;
+  accuracy: number;
+  falsePositiveRate: number;
+  averageRiskScore: number;
+  anomalyCount: number;
+  challengesIssued: number;
+  lastUpdated: string;
+}
 
 // ── Public marketplace helpers ────────────────────────────────────────────────
 
