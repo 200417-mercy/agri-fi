@@ -406,7 +406,7 @@ export class TradeDealsService {
     }
 
     const [deals, total] = await qb.getManyAndCount();
-    const watched = await this.watchedDealIds(
+    const watchedIds = await this.watchedDealIds(
       query.viewerId,
       deals.map((deal) => deal.id),
     );
@@ -440,7 +440,7 @@ export class TradeDealsService {
         risk_rating: deal.riskRating,
         min_lot_size: Number(deal.minLotSize),
         lot_step: Number(deal.lotStep),
-        is_watched: watched.has(deal.id),
+        watched: watchedIds.has(deal.id),
       })),
       total,
       page,

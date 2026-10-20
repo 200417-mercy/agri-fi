@@ -48,10 +48,7 @@ describe('TradeDealsService.findOpen watchlist flag (#1003)', () => {
     const { service, watchlistRepo } = buildService([{ dealId: 'deal-1' }]);
     const result = await service.findOpen({ viewerId: 'investor-1' });
 
-    expect(result.data.map((deal: any) => deal.is_watched)).toEqual([
-      true,
-      false,
-    ]);
+    expect(result.data.map((deal: any) => deal.watched)).toEqual([true, false]);
     const options = watchlistRepo.find.mock.calls[0][0];
     expect(options.where.userId).toBe('investor-1');
     expect(options.where.dealId).toEqual(In(['deal-1', 'deal-2']));
@@ -61,7 +58,7 @@ describe('TradeDealsService.findOpen watchlist flag (#1003)', () => {
     const { service, watchlistRepo } = buildService([{ dealId: 'deal-1' }]);
     const result = await service.findOpen({});
 
-    expect(result.data.map((deal: any) => deal.is_watched)).toEqual([
+    expect(result.data.map((deal: any) => deal.watched)).toEqual([
       false,
       false,
     ]);
@@ -92,7 +89,7 @@ describe('TradeDealsService.findOpen watchlist flag (#1003)', () => {
     );
 
     const result = await service.findOpen({ viewerId: 'investor-1' });
-    expect(result.data.map((deal: any) => deal.is_watched)).toEqual([
+    expect(result.data.map((deal: any) => deal.watched)).toEqual([
       false,
       false,
     ]);

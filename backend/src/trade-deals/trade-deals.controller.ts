@@ -283,7 +283,7 @@ export class TradeDealsController {
   @ApiOperation({
     summary: 'List open trade deals (marketplace)',
     description:
-      'Send an access token to have each row carry `is_watched`, the #1003 watchlist flag. The listing is cached per viewer.',
+      'Send an access token to have each row carry the `watched` flag from #1003. The listing is cached per viewer.',
   })
   @ApiBearerAuth('jwt')
   @ApiQuery({ name: 'commodity', required: false, example: 'Cocoa' })
