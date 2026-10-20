@@ -49,6 +49,7 @@ import { PublicApiModule } from './public-api/public-api.module';
 import { KycRulesModule } from './kyc-rules/kyc-rules.module';
 import { AccreditationModule } from './accreditation/accreditation.module';
 import { ChatModule } from './chat/chat.module';
+import { WatchlistModule } from './watchlist/watchlist.module';
 import { CollaborationModule } from './collaboration/collaboration.module';
 import { OracleModule } from './oracles/oracle.module';
 import { TracingModule } from './tracing/tracing.module';
@@ -142,6 +143,7 @@ import { LetterOfCreditModule } from './letter-of-credit/letter-of-credit.module
     PlatformIntegrationsModule,
     StressTestingModule,
     LetterOfCreditModule,
+    WatchlistModule,
   ],
   providers: [
     {

@@ -16,6 +16,7 @@ import {
 import {
   CACHE_MANAGER,
   CacheInterceptor,
+  CacheKey,
   CacheTTL,
 } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
@@ -50,6 +51,7 @@ import { TradeDealAccessRequest, TradeDealsGuard } from './trade-deals.guard';
 import { EsgScoringService, EsgQuestionnaireDto } from './esg-scoring.service';
 import { DealHealthService } from './deal-health.service';
 import { RiskScoringService } from './risk-scoring.service';
+import { marketplaceCacheKey, viewerIdOf } from './marketplace-cache-key';
 
 interface AuthRequest extends Request {
   user: User;
@@ -274,9 +276,16 @@ export class TradeDealsController {
 
   @Get()
   @Throttle({ marketplace: { limit: 60, ttl: 60000 } })
+  @UseGuards(OptionalJwtGuard)
   @UseInterceptors(CacheInterceptor)
   @CacheTTL(30000)
-  @ApiOperation({ summary: 'List open trade deals (marketplace)' })
+  @CacheKey(marketplaceCacheKey)
+  @ApiOperation({
+    summary: 'List open trade deals (marketplace)',
+    description:
+      'Send an access token to have each row carry `is_watched`, the #1003 watchlist flag. The listing is cached per viewer.',
+  })
+  @ApiBearerAuth('jwt')
   @ApiQuery({ name: 'commodity', required: false, example: 'Cocoa' })
   @ApiQuery({ name: 'country', required: false, example: 'Nigeria' })
   @ApiQuery({ name: 'region', required: false, example: 'Ashanti' })
@@ -296,8 +305,10 @@ export class TradeDealsController {
   @ApiResponse({ status: 200, description: 'Paginated list of open deals' })
   async findOpen(
     @Query() query: Record<string, string | undefined> = {},
+    @Request() req: Request,
   ): Promise<{ data: any[]; total: number; page: number; limit: number }> {
     return this.tradeDealsService.findOpen({
+      viewerId: viewerIdOf(req),
       commodity: query.commodity,
       country: query.country,
       region: query.region,
