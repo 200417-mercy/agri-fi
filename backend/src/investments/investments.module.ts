@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { InvestmentsService } from './investments.service';
+import { PortfolioSummaryService } from './portfolio-summary.service';
 import { InvestmentsController } from './investments.controller';
 import { FeeConfigurationService } from './fee-configuration.service';
 import { FeeConfigurationController } from './fee-configuration.controller';
@@ -59,6 +60,7 @@ import { LiquiditySnapshot } from './entities/liquidity-snapshot.entity';
   ],
   providers: [
     InvestmentsService,
+    PortfolioSummaryService,
     InvestmentEventStore,
     FeeCalculatorService,
     FeeConfigurationService,
