@@ -304,12 +304,10 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`${API_BASE}${versionedPath}`, {
     ...init,
     credentials: "include",
-    headers: {
+    headers: traceHeaders({
       ...(typeof FormData !== "undefined" && init.body instanceof FormData
         ? {}
         : { "Content-Type": "application/json" }),
-    headers: traceHeaders({
-      "Content-Type": "application/json",
       ...authHeaders(),
       ...((init.headers as Record<string, string>) ?? {}),
     }),
