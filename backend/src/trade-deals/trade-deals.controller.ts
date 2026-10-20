@@ -49,6 +49,7 @@ import { TradeDealAccessRequest, TradeDealsGuard } from './trade-deals.guard';
 
 import { EsgScoringService, EsgQuestionnaireDto } from './esg-scoring.service';
 import { DealHealthService } from './deal-health.service';
+import { RiskScoringService } from './risk-scoring.service';
 
 interface AuthRequest extends Request {
   user: User;
@@ -64,6 +65,7 @@ export class TradeDealsController {
     private readonly activityFeedService: ActivityFeedService,
     private readonly esgScoringService: EsgScoringService,
     private readonly dealHealthService: DealHealthService,
+    private readonly riskScoringService: RiskScoringService,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
   ) {}
 
@@ -407,7 +409,10 @@ export class TradeDealsController {
     summary: 'Submit standardized ESG questionnaire for a trade deal',
   })
   @ApiParam({ name: 'id', description: 'Trade deal UUID' })
-  @ApiResponse({ status: 200, description: 'ESG questionnaire processed and queued for review' })
+  @ApiResponse({
+    status: 200,
+    description: 'ESG questionnaire processed and queued for review',
+  })
   @ApiResponse({ status: 403, description: 'Not authorized for this deal' })
   @ApiResponse({ status: 404, description: 'Trade deal not found' })
   async submitEsgQuestionnaire(
@@ -431,7 +436,9 @@ export class TradeDealsController {
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('admin', 'compliance_officer')
   @ApiBearerAuth('jwt')
-  @ApiOperation({ summary: 'List deals pending ESG compliance review (Admin only)' })
+  @ApiOperation({
+    summary: 'List deals pending ESG compliance review (Admin only)',
+  })
   @ApiResponse({ status: 200, description: 'Pending ESG review deals list' })
   async getEsgReviewQueue() {
     return this.esgScoringService.getPendingReviewDeals();
@@ -455,7 +462,9 @@ export class TradeDealsController {
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('admin', 'compliance_officer')
   @ApiBearerAuth('jwt')
-  @ApiOperation({ summary: 'Approve, reject, or adjust ESG review for a deal (Admin only)' })
+  @ApiOperation({
+    summary: 'Approve, reject, or adjust ESG review for a deal (Admin only)',
+  })
   @ApiParam({ name: 'id', description: 'Trade deal UUID' })
   @ApiResponse({ status: 200, description: 'ESG review decision applied' })
   async reviewEsgScore(
