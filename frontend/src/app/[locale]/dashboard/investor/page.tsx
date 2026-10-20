@@ -66,6 +66,22 @@ const DealHealthWidget = dynamic(
   },
 );
 
+const PortfolioSummaryWidget = dynamic(
+  () =>
+    import("../../../../components/dashboard/PortfolioSummaryWidget").then(
+      (m) => ({ default: m.default }),
+    ),
+  {
+    ssr: false,
+    loading: () => (
+      <div
+        className="card h-72 skeleton"
+        aria-label="Loading portfolio summary…"
+      />
+    ),
+  },
+);
+
 const INV_STATUS: Record<string, string> = {
   confirmed: "badge-green",
   pending: "badge-yellow",
@@ -334,6 +350,8 @@ export default function InvestorDashboard() {
         {/* ── Portfolio tab ── */}
         {tab === "portfolio" && (
           <>
+            <PortfolioSummaryWidget />
+
             {!loading && investments.length > 0 && (
               <PortfolioChart data={portfolioHistory} />
             )}
