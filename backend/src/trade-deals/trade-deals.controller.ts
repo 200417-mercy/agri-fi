@@ -49,6 +49,7 @@ import { TradeDealAccessRequest, TradeDealsGuard } from './trade-deals.guard';
 
 import { EsgScoringService, EsgQuestionnaireDto } from './esg-scoring.service';
 import { DealHealthService } from './deal-health.service';
+import { RiskScoringService } from './risk-scoring.service';
 
 interface AuthRequest extends Request {
   user: User;
@@ -64,6 +65,7 @@ export class TradeDealsController {
     private readonly activityFeedService: ActivityFeedService,
     private readonly esgScoringService: EsgScoringService,
     private readonly dealHealthService: DealHealthService,
+    private readonly riskScoringService: RiskScoringService,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
   ) {}
 
@@ -407,7 +409,10 @@ export class TradeDealsController {
     summary: 'Submit standardized ESG questionnaire for a trade deal',
   })
   @ApiParam({ name: 'id', description: 'Trade deal UUID' })
-  @ApiResponse({ status: 200, description: 'ESG questionnaire processed and queued for review' })
+  @ApiResponse({
+    status: 200,
+    description: 'ESG questionnaire processed and queued for review',
+  })
   @ApiResponse({ status: 403, description: 'Not authorized for this deal' })
   @ApiResponse({ status: 404, description: 'Trade deal not found' })
   async submitEsgQuestionnaire(
@@ -431,7 +436,9 @@ export class TradeDealsController {
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('admin', 'compliance_officer')
   @ApiBearerAuth('jwt')
-  @ApiOperation({ summary: 'List deals pending ESG compliance review (Admin only)' })
+  @ApiOperation({
+    summary: 'List deals pending ESG compliance review (Admin only)',
+  })
   @ApiResponse({ status: 200, description: 'Pending ESG review deals list' })
   async getEsgReviewQueue() {
     return this.esgScoringService.getPendingReviewDeals();
@@ -455,7 +462,9 @@ export class TradeDealsController {
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('admin', 'compliance_officer')
   @ApiBearerAuth('jwt')
-  @ApiOperation({ summary: 'Approve, reject, or adjust ESG review for a deal (Admin only)' })
+  @ApiOperation({
+    summary: 'Approve, reject, or adjust ESG review for a deal (Admin only)',
+  })
   @ApiParam({ name: 'id', description: 'Trade deal UUID' })
   @ApiResponse({ status: 200, description: 'ESG review decision applied' })
   async reviewEsgScore(
@@ -469,6 +478,91 @@ export class TradeDealsController {
       body.approved,
       body.notes,
       body.adjustedScore,
+    );
+  }
+
+  // ── Multi-dimensional Risk Scoring & Recommendations (#1213) ───────────────
+
+  @Get('recommendations/by-risk')
+  @ApiOperation({
+    summary:
+      'Get risk-based trade deal recommendations filtered by investor risk tolerance',
+  })
+  @ApiQuery({
+    name: 'tolerance',
+    required: false,
+    enum: ['low', 'medium', 'high', 'very_high'],
+    example: 'medium',
+  })
+  @ApiQuery({ name: 'limit', required: false, example: 10 })
+  @ApiResponse({
+    status: 200,
+    description: 'Ranked deal recommendations by Sharpe ratio',
+  })
+  async getRiskRecommendations(
+    @Query('tolerance') tolerance?: 'low' | 'medium' | 'high' | 'very_high',
+    @Query('limit') limit?: number,
+  ) {
+    return this.riskScoringService.getRiskBasedRecommendations(
+      tolerance || 'medium',
+      limit ? Number(limit) : 10,
+    );
+  }
+
+  @Get(':id/risk-scoring')
+  @ApiOperation({
+    summary:
+      'Get comprehensive multi-dimensional risk scoring, breakdown, and radar visualization',
+  })
+  @ApiParam({ name: 'id', description: 'Trade deal UUID' })
+  @ApiResponse({
+    status: 200,
+    description: 'Risk score breakdown and visualization',
+  })
+  async getRiskScoring(@Param('id') id: string) {
+    return this.riskScoringService.getRiskVisualization(id);
+  }
+
+  @Get(':id/risk-history')
+  @ApiOperation({
+    summary:
+      'Get historical risk score trajectory and past calculations for a trade deal',
+  })
+  @ApiParam({ name: 'id', description: 'Trade deal UUID' })
+  @ApiResponse({
+    status: 200,
+    description: 'Historical risk score audit entries',
+  })
+  async getRiskHistory(@Param('id') id: string) {
+    return this.riskScoringService.getDealRiskHistory(id);
+  }
+
+  @Get(':id/risk-audit')
+  @ApiOperation({
+    summary: 'Get risk score calculation audit trail',
+  })
+  @ApiParam({ name: 'id', description: 'Trade deal UUID' })
+  @ApiResponse({
+    status: 200,
+    description: 'Risk score calculation audit trail',
+  })
+  async getRiskAudit(@Param('id') id: string) {
+    return this.riskScoringService.getAuditTrail(id);
+  }
+
+  @Post(':id/recalculate-risk')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin', 'trader')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: 'Trigger risk score re-computation and record in audit trail',
+  })
+  @ApiParam({ name: 'id', description: 'Trade deal UUID' })
+  @ApiResponse({ status: 200, description: 'Recalculated risk score result' })
+  async recalculateRisk(@Param('id') id: string, @Request() req: AuthRequest) {
+    return this.riskScoringService.computeAndPersist(
+      id,
+      req.user?.id || 'manual',
     );
   }
 }
