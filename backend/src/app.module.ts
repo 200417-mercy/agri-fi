@@ -25,7 +25,12 @@ import { HttpLoggerMiddleware } from './common/middleware/http-logger.middleware
 import { loggingConfig } from './common/logging/logging.config';
 import { HealthModule } from './health/health.module';
 import { TerminusModule } from '@nestjs/terminus';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { UserThrottlerGuard } from './rate-limit/user-throttler.guard';
+import {
+  buildThrottlerOptions,
+  readRateLimitSettings,
+} from './rate-limit/rate-limit.config';
 import { SorobanModule } from './soroban/soroban.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { ReferralsModule } from './referrals/referrals.module';
@@ -65,33 +70,12 @@ import { LetterOfCreditModule } from './letter-of-credit/letter-of-credit.module
     ClsModule.forRoot({ global: true }),
     ScheduleModule.forRoot(),
     TypeOrmModule.forFeature([TradeDeal, Investment]),
-    ThrottlerModule.forRoot([
-      {
-        name: 'default',
-        ttl: parseInt(process.env.RATE_LIMIT_TTL || '60000'),
-        limit: parseInt(process.env.RATE_LIMIT_GLOBAL || '100'),
-      },
-      {
-        name: 'login',
-        ttl: 60000,
-        limit: 5,
-      },
-      {
-        name: 'kyc',
-        ttl: 60000,
-        limit: 3,
-      },
-      {
-        name: 'marketplace',
-        ttl: 60000,
-        limit: 60,
-      },
-      {
-        name: 'public-market',
-        ttl: 60000,
-        limit: 120,
-      },
-    ]),
+    ThrottlerModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) =>
+        buildThrottlerOptions(readRateLimitSettings(config)),
+    }),
     LoggerModule.forRoot(loggingConfig),
     ConfigModule.forRoot({
       isGlobal: true,
@@ -150,7 +134,7 @@ import { LetterOfCreditModule } from './letter-of-credit/letter-of-credit.module
     },
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: UserThrottlerGuard,
     },
   ],
 })
