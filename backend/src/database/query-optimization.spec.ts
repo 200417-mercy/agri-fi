@@ -9,7 +9,12 @@ const INDEXES = {
   investmentsInvestorId: 'idx_investments_investor_id',
   shipmentMilestonesTradeDealId: 'idx_shipment_milestones_trade_deal_id',
   paymentDistributionsTradeDealId: 'idx_payment_distributions_trade_deal_id',
+  tradeDealsActive: 'idx_trade_deals_active',
+  investmentsOpen: 'idx_investments_open',
 } as const;
+
+/** Index from migration 2100000000000-AlignOutboxPendingIndex (#968) */
+const OUTBOX_PENDING_INDEX = 'idx_outbox_pending_scan';
 
 /** Seeded in migration 1762000000000-SeedInitialData */
 const SEED = {
@@ -71,6 +76,8 @@ describeWithDatabase('Query planner optimizations (PostgreSQL)', () => {
     await dataSource.query('ANALYZE investments');
     await dataSource.query('ANALYZE shipment_milestones');
     await dataSource.query('ANALYZE payment_distributions');
+    await dataSource.query('ANALYZE trade_deals');
+    await dataSource.query('ANALYZE outbox');
   });
 
   afterAll(async () => {
@@ -169,5 +176,82 @@ describeWithDatabase('Query planner optimizations (PostgreSQL)', () => {
     );
 
     expectIndexScan(plan, INDEXES.paymentDistributionsTradeDealId);
+  });
+
+  it('uses partial index for open trade deals dashboard query', async () => {
+    const plan = await explainAnalyze(
+      dataSource,
+      `
+        SELECT *
+        FROM trade_deals
+        WHERE status = 'open'
+      `,
+    );
+
+    expectIndexScan(plan, INDEXES.tradeDealsActive);
+  });
+
+  it('uses partial index for active investments dashboard query', async () => {
+    const plan = await explainAnalyze(
+      dataSource,
+      `
+        SELECT *
+        FROM investments
+        WHERE status = 'active'
+      `,
+    );
+
+    expectIndexScan(plan, INDEXES.investmentsOpen);
+  });
+
+  it('defines the outbox pending-event composite index', async () => {
+    const rows: Array<{ indexname: string; indexdef: string }> =
+      await dataSource.query(
+        `
+          SELECT indexname, indexdef
+          FROM pg_indexes
+          WHERE schemaname = 'public'
+            AND tablename = 'outbox'
+            AND indexname = $1
+        `,
+        [OUTBOX_PENDING_INDEX],
+      );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].indexdef).toMatch(/\(processed, retry_count, created_at\)/i);
+    expect(rows[0].indexdef).toMatch(/WHERE .*processed.*=.*false/i);
+  });
+
+  it('uses the outbox composite index for the publishPending worker query at volume', async () => {
+    // Seed 100k pending events so the planner has a realistic choice to make.
+    await dataSource.query(`
+      INSERT INTO outbox (event_type, payload)
+      SELECT 'test.outbox.index', '{}'::jsonb
+      FROM generate_series(1, 100000)
+    `);
+
+    try {
+      await dataSource.query('ANALYZE outbox');
+
+      const plan = await explainAnalyze(
+        dataSource,
+        `
+          SELECT id, event_type, payload, processed, retry_count, last_error,
+                 created_at, updated_at, processed_at
+          FROM outbox
+          WHERE processed = FALSE AND retry_count < 10
+          ORDER BY created_at ASC
+          LIMIT 50
+          FOR UPDATE SKIP LOCKED
+        `,
+      );
+
+      expectIndexScan(plan, OUTBOX_PENDING_INDEX);
+    } finally {
+      await dataSource.query(
+        `DELETE FROM outbox WHERE event_type = 'test.outbox.index'`,
+      );
+      await dataSource.query('ANALYZE outbox');
+    }
   });
 });

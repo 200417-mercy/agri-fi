@@ -1,0 +1,24 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: '15s'
+
+  - name: Thanos (Long-Term)
+    type: prometheus
+    uid: thanos-cortex
+    access: proxy
+    url: http://thanos-query:9090
+    isDefault: false
+    editable: false
+    jsonData:
+      timeInterval: '1m'
+      httpMethod: 'POST'
+

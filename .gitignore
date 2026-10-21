@@ -21,7 +21,10 @@ coverage
 **/__snapshots__
 *.snap
 test-results
+test-output.txt
 playwright-report
+visual-playwright-report
+visual-test-results
 .nyc_output
 
 # Logs
@@ -64,7 +67,25 @@ blockchain/target
 *.tfvars
 !*.tfvars.example
 
-# Misc
+# Next.js / Vercel
+.vercel
+.next/cache
+
+# Sentry
+.sentryclirc
+
+# Jest output
+jest-results.json
+
+# Playwright
+playwright/.cache/
+
+# Backend test output
+backend/test-output.txt
+
+# Debug / temp files
+*.local.js
+*.local.ts
 fix.md
 *.md.bak
 

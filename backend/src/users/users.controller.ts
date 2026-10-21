@@ -5,10 +5,13 @@ import {
   UseGuards,
   Request,
   Query,
+  Param,
   BadRequestException,
   ForbiddenException,
   Res,
   Header,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { Response } from 'express';
 import {
@@ -16,11 +19,14 @@ import {
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
+  ApiParam,
 } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { UsersService } from './users.service';
 import { TradeDealsService } from '../trade-deals/trade-deals.service';
 import { User } from '../auth/entities/user.entity';
+
+import { FarmerCreditScoringService } from './farmer-credit-scoring.service';
 
 interface AuthRequest extends Request {
   user: User;
@@ -29,11 +35,12 @@ interface AuthRequest extends Request {
 @ApiTags('users')
 @ApiBearerAuth('jwt')
 @UseGuards(AuthGuard('jwt'))
-@Controller('users')
+@Controller({ version: '1', path: 'users' })
 export class UsersController {
   constructor(
     private readonly usersService: UsersService,
     private readonly tradeDealsService: TradeDealsService,
+    private readonly creditScoringService: FarmerCreditScoringService,
   ) {}
 
   @Get('me')
@@ -46,6 +53,36 @@ export class UsersController {
   @ApiResponse({ status: 404, description: 'User not found' })
   async getCurrentUser(@Request() req: AuthRequest) {
     return this.usersService.getProfile(req.user.id);
+  }
+
+  @Get('me/credit-score')
+  @ApiOperation({
+    summary: "Get farmer credit score, weighted factor breakdown, and improvement tips (#1016)",
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Farmer credit score disclosure with factor breakdown and tips',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 403, description: 'Forbidden - only accessible by farmers' })
+  @ApiResponse({ status: 404, description: 'User not found' })
+  async getMyCreditScore(@Request() req: AuthRequest) {
+    return this.creditScoringService.getCreditScoreDisclosure(req.user.id);
+  }
+  @Delete('me')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary:
+      'Delete the authenticated user account (GDPR Right to be Forgotten)',
+  })
+  @ApiResponse({
+    status: 204,
+    description: 'Account deleted successfully',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 404, description: 'User not found' })
+  async deleteAccount(@Request() req: AuthRequest) {
+    await this.usersService.deleteAccount(req.user.id);
   }
 
   @Get('me/deals')
@@ -109,6 +146,23 @@ export class UsersController {
     return this.usersService.getUserInvestments(id, role);
   }
 
+  @Get('me/activity')
+  @ApiOperation({
+    summary: "Get the authenticated user's chronological activity log",
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'List of activity events, newest first',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async getActivityLog(
+    @Request() req: AuthRequest,
+    @Query('limit') limit?: string,
+  ) {
+    const parsedLimit = limit ? Math.min(parseInt(limit, 10), 200) : 50;
+    return this.usersService.getActivityLog(req.user.id, parsedLimit);
+  }
+
   @Get('me/export')
   @ApiOperation({ summary: 'Export all user data (GDPR compliance)' })
   @ApiResponse({
@@ -122,5 +176,23 @@ export class UsersController {
     const { id } = req.user;
     const userData = await this.usersService.exportUserData(id);
     res.json(userData);
+  }
+
+  @Get('admin/gdpr-erasure-queue')
+  @ApiOperation({ summary: 'View pending GDPR erasure queue (Admin only)' })
+  @ApiResponse({
+    status: 200,
+    description: 'List of users pending GDPR erasure',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
+  async getPendingErasureQueue(@Request() req: AuthRequest) {
+    if (req.user.role !== 'admin') {
+      throw new ForbiddenException('Admin access required');
+    }
+    return this.usersService.getPendingErasureQueue();
   }
 }

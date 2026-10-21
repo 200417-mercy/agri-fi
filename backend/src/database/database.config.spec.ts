@@ -1,78 +1,109 @@
 import { ConfigService } from '@nestjs/config';
+import { DataSource } from 'typeorm';
+import { PostgresDriver } from 'typeorm/driver/postgres/PostgresDriver';
 import { DatabaseConfig } from './database.config';
 
-describe('DatabaseConfig (Issue #954)', () => {
-  let configService: ConfigService;
+describe('DatabaseConfig', () => {
+  const poolConfig = () =>
+    new DatabaseConfig(
+      new ConfigService({
+        NODE_ENV: 'production',
+        DATABASE_POOL_MIN: 2,
+        DATABASE_POOL_MAX: 5,
+        DATABASE_POOL_IDLE_TIMEOUT_MS: 20_000,
+        DATABASE_POOL_CONNECTION_TIMEOUT_MS: 3_000,
+        DATABASE_HEALTH_CHECK_INTERVAL_MS: 10_000,
+        DATABASE_CONNECTION_LEAK_THRESHOLD_MS: 30_000,
+      }),
+    );
 
-  beforeEach(() => {
-    configService = new ConfigService();
-  });
+  it('configures bounded, validated PostgreSQL connections', async () => {
+    const config = poolConfig();
+    const options = config.createTypeOrmOptions();
 
-  afterEach(() => {
-    delete process.env.DB_POOL_MAX;
-    delete process.env.DB_POOL_MIN;
-    delete process.env.DB_POOL_IDLE_TIMEOUT;
-  });
-
-  it('uses default pool values when env vars are unset', () => {
-    delete process.env.DB_POOL_MAX;
-    delete process.env.DB_POOL_MIN;
-    delete process.env.DB_POOL_IDLE_TIMEOUT;
-
-    const dbConfig = new DatabaseConfig(configService);
-    const options = dbConfig.createTypeOrmOptions() as any;
-
-    expect(options.extra).toEqual({
-      max: 20,
-      min: 2,
-      idleTimeoutMillis: 30000,
+    expect(options).toMatchObject({
+      extra: {
+        min: 2,
+        max: 5,
+        idleTimeoutMillis: 20_000,
+        connectionTimeoutMillis: 3_000,
+        keepAlive: true,
+        application_name: 'agri-fi-backend',
+      },
     });
+
+    const client = {
+      query: jest.fn().mockResolvedValue({ rows: [{ '?column?': 1 }] }),
+    };
+    await options.extra?.onConnect(client);
+    expect(client.query).toHaveBeenCalledWith('SELECT 1');
   });
 
-  it('reads custom pool values from environment variables', () => {
-    process.env.DB_POOL_MAX = '15';
-    process.env.DB_POOL_MIN = '5';
-    process.env.DB_POOL_IDLE_TIMEOUT = '60000';
+  it('reports driver pool state and connection acquisition wait time', async () => {
+    const config = poolConfig();
+    const dataSource = new DataSource({ type: 'postgres' });
+    const client = {};
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    const pool = {
+      totalCount: 2,
+      idleCount: 1,
+      waitingCount: 3,
+      connect: (callback: (...args: unknown[]) => void) =>
+        callback(undefined, client, jest.fn()),
+      on: (event: string, listener: (...args: unknown[]) => void) => {
+        listeners.set(event, listener);
+        return pool;
+      },
+      off: (event: string) => {
+        listeners.delete(event);
+        return pool;
+      },
+    };
 
-    const dbConfig = new DatabaseConfig(configService);
-    const options = dbConfig.createTypeOrmOptions() as any;
+    (dataSource.driver as PostgresDriver).master = pool;
+    Object.defineProperty(dataSource, 'isInitialized', { value: true });
+    config.setDataSource(dataSource);
 
-    expect(options.extra.max).toBe(15);
-    expect(options.extra.min).toBe(5);
-    expect(options.extra.idleTimeoutMillis).toBe(60000);
+    const initialStats = await config.queryPoolStats();
+    expect(initialStats).toMatchObject({
+      totalConnections: 2,
+      idleConnections: 1,
+      waitingClients: 3,
+      checkedOutConnections: 1,
+    });
+
+    pool.connect(jest.fn());
+    const acquiredStats = await config.queryPoolStats();
+    expect(acquiredStats.acquisitionCount).toBe(1);
+    expect(acquiredStats.averageAcquireWaitSeconds).toBeGreaterThanOrEqual(0);
+    expect(acquiredStats.oldestCheckedOutSeconds).toBeGreaterThanOrEqual(0);
+
+    listeners.get('release')?.(undefined, client);
+    pool.idleCount = 2;
+    expect((await config.queryPoolStats()).oldestCheckedOutSeconds).toBe(0);
+
+    config.onModuleDestroy();
+    expect(listeners.size).toBe(0);
   });
 
-  it('falls back to defaults for invalid env values', () => {
-    process.env.DB_POOL_MAX = 'not-a-number';
-    process.env.DB_POOL_MIN = '';
-    process.env.DB_POOL_IDLE_TIMEOUT = 'invalid';
+  it('marks database health from the validation query result', async () => {
+    const config = poolConfig();
+    const dataSource = new DataSource({ type: 'postgres' });
+    Object.defineProperty(dataSource, 'isInitialized', { value: true });
+    const query = jest
+      .spyOn(dataSource, 'query')
+      .mockResolvedValue([{ '?column?': 1 }]);
+    config.setDataSource(dataSource);
 
-    const dbConfig = new DatabaseConfig(configService);
-    const options = dbConfig.createTypeOrmOptions() as any;
+    await config.healthCheck();
 
-    // parseInt with fallback ?? operator should use defaults
-    expect(options.extra.max).toBe(NaN); // parseInt('not-a-number') returns NaN
-    // The fallback only triggers for null/undefined, not NaN — this is expected
-    // behavior. In production, env.validation.ts rejects non-numeric values.
-  });
+    expect(query).toHaveBeenCalledWith('SELECT 1');
+    expect(config.isHealthy).toBe(true);
 
-  it('extra object is always present in the config', () => {
-    const dbConfig = new DatabaseConfig(configService);
-    const options = dbConfig.createTypeOrmOptions() as any;
-
-    expect(options.extra).toBeDefined();
-    expect(options.extra).toHaveProperty('max');
-    expect(options.extra).toHaveProperty('min');
-    expect(options.extra).toHaveProperty('idleTimeoutMillis');
-  });
-
-  it('base database options are preserved', () => {
-    const dbConfig = new DatabaseConfig(configService);
-    const options = dbConfig.createTypeOrmOptions() as any;
-
-    expect(options.type).toBe('postgres');
-    expect(options.synchronize).toBe(false);
-    expect(options.retryAttempts).toBe(10);
-    expect(options.retryDelay).toBe(3000);
+    query.mockRejectedValueOnce(new Error('connection unavailable'));
+    await expect(config.healthCheck()).rejects.toThrow(
+      'connection unavailable',
+    );
+    expect(config.isHealthy).toBe(false);
   });
 });

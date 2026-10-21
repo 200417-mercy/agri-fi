@@ -4,13 +4,18 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { SorobanService } from './soroban.service';
 import { SorobanController } from './soroban.controller';
 import { SorobanListenerService } from './soroban-listener.service';
+import { SorobanRentService } from './soroban-rent.service';
 import { TradeDeal } from '../trade-deals/entities/trade-deal.entity';
+import { ContractDispute } from './entities/contract-dispute.entity';
 
 @Global()
 @Module({
-  imports: [ConfigModule, TypeOrmModule.forFeature([TradeDeal])],
+  imports: [
+    ConfigModule,
+    TypeOrmModule.forFeature([TradeDeal, ContractDispute]),
+  ],
   controllers: [SorobanController],
-  providers: [SorobanService, SorobanListenerService],
-  exports: [SorobanService],
+  providers: [SorobanService, SorobanListenerService, SorobanRentService],
+  exports: [SorobanService, SorobanRentService],
 })
 export class SorobanModule {}

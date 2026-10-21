@@ -7,8 +7,26 @@ import { useTranslations } from "next-intl";
 import { apiClient, Deal, User, MILESTONE_LABELS } from "../../../../lib/api";
 import DashboardLayout from "../../../../components/DashboardLayout";
 import StatCard from "../../../../components/StatCard";
+import OnboardingChecklist from "../../../../components/OnboardingChecklist";
 import { useToast } from "../../../../components/ui/ToastProvider";
-import { CreateDealForm } from "../../../../components/deals/CreateDealForm";
+import { usePushNotifications } from "../../../../hooks/usePushNotifications";
+import { useCurrencyFormat } from "../../../../hooks/useCurrencyFormat";
+import { useNumberFormat } from "../../../../hooks/useNumberFormat";
+import dynamic from "next/dynamic";
+import FarmerCreditScoreWidget from "../../../../components/dashboard/FarmerCreditScoreWidget";
+
+// CreateDealForm pulls in react-hook-form + zod validation + heavy form logic.
+// Load it only when the user explicitly opens the "Create Deal" panel.
+const CreateDealForm = dynamic(
+  () => import("../../../../components/deals/CreateDealForm").then(m => ({ default: m.CreateDealForm })),
+  {
+    loading: () => (
+      <div className="card p-8 flex items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-brand-500 border-t-transparent" aria-label="Loading form…" />
+      </div>
+    ),
+  },
+);
 
 const STATUS_CFG: Record<string, string> = {
   open: "badge-green",
@@ -21,14 +39,27 @@ const STATUS_CFG: Record<string, string> = {
 };
 
 export default function FarmerDashboard() {
+  const { formatCurrency } = useCurrencyFormat();
+  const { formatNumber } = useNumberFormat();
   const t = useTranslations("dashboard.farmer");
   const tc = useTranslations("common");
   const router = useRouter();
   const { toast } = useToast();
   const [user, setUser] = useState<User | null>(null);
+
   const [deals, setDeals] = useState<Deal[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const [showChecklist, setShowChecklist] = useState(true);
+
+  // Restore dismissed state from localStorage on mount
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      if (localStorage.getItem("onboarding_dismissed") === "true") {
+        setShowChecklist(false);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -85,12 +116,25 @@ export default function FarmerDashboard() {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
+        <div data-tour="portfolio-stats" className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
           <StatCard label={t("stats.totalProjects")} value={deals.length} icon="🌱" color="bg-emerald-50" />
           <StatCard label={t("stats.active")} value={active} icon="📈" color="bg-blue-50" />
-          <StatCard label={t("stats.totalValue")} value={`$${totalValue.toLocaleString()}`} icon="💰" color="bg-amber-50" />
-          <StatCard label={t("stats.funded")} value={`${fundingPct}%`} icon="✅" color="bg-violet-50" trend={`$${totalFunded.toLocaleString()} raised`} trendUp={totalFunded > 0} />
+          <StatCard label={t("stats.totalValue")} value={totalValue} isCurrency currency="USD" icon="💰" color="bg-amber-50" />
+          <StatCard label={t("stats.funded")} value={`${fundingPct}%`} icon="✅" color="bg-violet-50" trend={`${formatCurrency(totalFunded, "USD", { compact: true })} raised`} trendUp={totalFunded > 0} />
         </div>
+
+        {/* Onboarding checklist */}
+        {showChecklist && user && (
+          <div className="mt-4">
+            <OnboardingChecklist
+              userId={user.id}
+              onDismiss={() => {
+                localStorage.setItem("onboarding_dismissed", "true");
+                setShowChecklist(false);
+              }}
+            />
+          </div>
+        )}
 
         {/* KYC notice */}
         {user.kycStatus !== "verified" && (
@@ -102,6 +146,11 @@ export default function FarmerDashboard() {
             </div>
           </div>
         )}
+
+        {/* Farmer Credit Score & Improvement Tips */}
+        <div className="mt-4">
+          <FarmerCreditScoreWidget />
+        </div>
 
         {/* Recent Deals List */}
         <div className="mt-6">
@@ -120,7 +169,7 @@ export default function FarmerDashboard() {
               <button onClick={() => setShowModal(true)} className="btn-primary mx-auto">{t("noProjects.cta")}</button>
             </div>
           ) : (
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+            <div className="grid sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-3 gap-5">
               {deals.map((deal) => {
                 const pct = deal.total_value > 0 ? Math.min((Number(deal.total_invested) / Number(deal.total_value)) * 100, 100) : 0;
                 const latest = deal.milestones?.slice().sort((a: any, b: any) => new Date(b.recorded_at).getTime() - new Date(a.recorded_at).getTime())[0];
@@ -133,7 +182,7 @@ export default function FarmerDashboard() {
                       </div>
                       <div className="text-right">
                         <div className={STATUS_CFG[deal.status] ?? "badge-gray"}>{deal.status}</div>
-                        <div className="text-xs text-slate-400 mt-1">{Number(deal.quantity).toLocaleString()} {deal.quantity_unit}</div>
+                        <div className="text-xs text-slate-400 mt-1">{formatNumber(deal.quantity)} {deal.quantity_unit}</div>
                       </div>
                     </div>
 

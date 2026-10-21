@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
@@ -7,23 +7,58 @@ import { AuthController } from './auth.controller';
 import { AdminController } from './admin.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
+import { GoogleStrategy } from './google.strategy';
 import { User } from './entities/user.entity';
 import { KycSubmission } from './entities/kyc-submission.entity';
-import { KycGuard } from './kyc.guard';
-import { RolesGuard } from './roles.guard';
+import { BiometricCredential } from './entities/biometric-credential.entity';
+import { BiometricController } from './biometric.controller';
+import { BiometricService } from './biometric.service';
+import { KycGuard, RolesGuard } from '../common/guards';
 import { QueueModule } from '../queue/queue.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { AuditModule } from '../audit/audit.module';
 import { TradeDeal } from '../trade-deals/entities/trade-deal.entity';
+import { Document } from '../trade-deals/entities/document.entity';
 import { OfacSanctionsCheckService } from './utils/ofac-sanctions-check';
 import { LoginLog } from '../database/entities/login-log.entity';
 import { AdminAction } from '../database/entities/admin-action.entity';
+import { SecurityIpBlock } from '../database/entities/security-ip-block.entity';
+import { KycCronService } from './kyc-cron.service';
+import { RedisConfig } from '../config/redis.config';
+import { TokenBlocklistService } from './token-blocklist.service';
+import { SecurityThreatService } from './security-threat.service';
+import { MfaGuard } from '../common/guards';
+import { EscrowModule } from '../escrow/escrow.module';
+import { SettlementModule } from '../settlement/settlement.module';
+import { DocumentsModule } from '../documents/documents.module';
+import { EmailSequenceModule } from '../email-sequence/email-sequence.module';
+import { KycRulesModule } from '../kyc-rules/kyc-rules.module';
+import { BehavioralProfile } from '../database/entities/behavioral-profile.entity';
+import { BehavioralRiskService } from './behavioral-risk.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User, KycSubmission, TradeDeal, LoginLog, AdminAction]),
+    TypeOrmModule.forFeature([
+      User,
+      KycSubmission,
+      TradeDeal,
+      Document,
+      LoginLog,
+      AdminAction,
+      SecurityIpBlock,
+      BehavioralProfile,
+      BiometricCredential,
+    ]),
+    ConfigModule,
     QueueModule,
     NotificationsModule,
+    AuditModule,
     PassportModule,
+    EscrowModule,
+    EmailSequenceModule,
+    SettlementModule,
+    DocumentsModule,
+    forwardRef(() => KycRulesModule),
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -33,14 +68,35 @@ import { AdminAction } from '../database/entities/admin-action.entity';
       }),
     }),
   ],
-  controllers: [AuthController, AdminController],
+  controllers: [AuthController, AdminController, BiometricController],
   providers: [
     AuthService,
+    BiometricService,
     JwtStrategy,
+    GoogleStrategy,
     KycGuard,
     RolesGuard,
+    MfaGuard,
+    RedisConfig,
+    TokenBlocklistService,
+    SecurityThreatService,
     OfacSanctionsCheckService,
+    KycCronService,
+    BehavioralRiskService,
   ],
-  exports: [AuthService, JwtModule, TypeOrmModule, KycGuard, RolesGuard],
+  exports: [
+    AuthService,
+    BiometricService,
+    JwtModule,
+    TypeOrmModule,
+    KycGuard,
+    RolesGuard,
+    MfaGuard,
+    RedisConfig,
+    TokenBlocklistService,
+    SecurityThreatService,
+    OfacSanctionsCheckService,
+    BehavioralRiskService,
+  ],
 })
 export class AuthModule {}

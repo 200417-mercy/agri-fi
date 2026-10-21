@@ -7,6 +7,8 @@ import { apiClient, Deal, User, MILESTONE_LABELS } from '../../../../lib/api';
 import DashboardLayout from '../../../../components/DashboardLayout';
 import StatCard from '../../../../components/StatCard';
 import { useToast } from '../../../../components/ui/ToastProvider';
+import { useCurrencyFormat } from '../../../../hooks/useCurrencyFormat';
+import { useNumberFormat } from '../../../../hooks/useNumberFormat';
 
 const STATUS_CFG: Record<string, string> = {
   open: 'badge-green', funded: 'badge-blue', draft: 'badge-yellow',
@@ -14,9 +16,12 @@ const STATUS_CFG: Record<string, string> = {
 };
 
 export default function TraderDashboard() {
+  const { formatCurrency } = useCurrencyFormat();
+  const { formatNumber } = useNumberFormat();
   const router = useRouter();
   const { toast } = useToast();
   const [user, setUser] = useState<User | null>(null);
+
   const [deals, setDeals] = useState<Deal[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedDeal, setSelectedDeal] = useState<string | null>(null);
@@ -73,12 +78,12 @@ export default function TraderDashboard() {
           <h1 className="page-title">Trader Dashboard</h1>
         </div>
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div data-tour="portfolio-stats" className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <StatCard label="Total Deals"  value={deals.length}                        icon="📋" color="bg-blue-50" />
           <StatCard label="Funded"       value={funded}                              icon="✅" color="bg-emerald-50" />
           <StatCard label="Completed"    value={completed}                           icon="🏆" color="bg-amber-50" />
-          <StatCard label="Total Raised" value={`$${totalFunded.toLocaleString()}`}  icon="💰" color="bg-violet-50"
-            trend={`of $${totalValue.toLocaleString()}`} trendUp={totalFunded > 0} />
+          <StatCard label="Total Raised" value={totalFunded} isCurrency currency="USD" icon="💰" color="bg-violet-50"
+            trend={`of ${formatCurrency(totalValue, 'USD', { compact: true })}`} trendUp={totalFunded > 0} />
         </div>
 
         {loading ? (
@@ -97,7 +102,7 @@ export default function TraderDashboard() {
               <h2 className="section-title">Your Deals</h2>
               <span className="muted">{deals.length} total</span>
             </div>
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+            <div className="grid sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-3 gap-5">
               {deals.map(deal => {
                 const pct = deal.total_value > 0
                   ? Math.min((Number(deal.total_invested) / Number(deal.total_value)) * 100, 100) : 0;
@@ -118,9 +123,9 @@ export default function TraderDashboard() {
 
                       <div className="grid grid-cols-2 gap-2">
                         {[
-                          ['Quantity', `${Number(deal.quantity).toLocaleString()} ${deal.quantity_unit}`],
-                          ['Value',    `$${Number(deal.total_value).toLocaleString()}`],
-                          ['Raised',   `$${Number(deal.total_invested).toLocaleString()}`],
+                          ['Quantity', `${formatNumber(deal.quantity)} ${deal.quantity_unit}`],
+                          ['Value',    formatCurrency(deal.total_value, 'USD', { decimalPlaces: 0 })],
+                          ['Raised',   formatCurrency(deal.total_invested, 'USD', { decimalPlaces: 0 })],
                           ['Delivery', new Date(deal.delivery_date).toLocaleDateString('en', { month: 'short', day: 'numeric', year: '2-digit' })],
                         ].map(([l, v]) => (
                           <div key={l} className="bg-slate-50 rounded-xl p-2.5">

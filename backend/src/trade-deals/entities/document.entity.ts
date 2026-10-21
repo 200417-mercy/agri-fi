@@ -13,7 +13,8 @@ export type DocumentType =
   | 'purchase_agreement'
   | 'bill_of_lading'
   | 'export_certificate'
-  | 'warehouse_receipt';
+  | 'warehouse_receipt'
+  | 'harvest_completion';
 
 export interface DocumentMetadata {
   dimensions?: {
@@ -55,8 +56,23 @@ export class Document {
   @Column({ name: 'signature_verified', default: false })
   signatureVerified: boolean;
 
+  @Column({ nullable: true })
+  title: string | null;
+
   @Column({ name: 'metadata', type: 'jsonb', default: {} })
   metadata: DocumentMetadata;
+
+  @Column({ name: 'verification_status', length: 20, default: 'pending' })
+  verificationStatus: 'pending' | 'approved' | 'rejected';
+
+  @Column({ name: 'rejection_reason', type: 'text', nullable: true })
+  rejectionReason: string | null;
+
+  @Column({ name: 'reviewed_by', nullable: true })
+  reviewedBy: string | null;
+
+  @Column({ name: 'reviewed_at', type: 'timestamptz', nullable: true })
+  reviewedAt: Date | null;
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;

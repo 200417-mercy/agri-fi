@@ -1,15 +1,19 @@
 import {
   Controller,
   Post,
+  Get,
+  Param,
   UseGuards,
   UseInterceptors,
   UploadedFile,
   Body,
   Request,
   BadRequestException,
+  Version,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { createHash } from 'crypto';
+import { extname } from 'path';
 import {
   ApiTags,
   ApiOperation,
@@ -20,25 +24,112 @@ import {
 } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '@nestjs/passport';
-import { unlink } from 'fs/promises';
 import { DocumentsService } from './documents.service';
+import { SignatureRequestService } from './signature-request.service';
 import { ClamScanService } from './clam-scan.service';
+import { UploadChunkDto, UploadCompleteDto } from './dto/upload-chunk.dto';
+import {
+  CreateSignatureRequestDto,
+  SignDocumentDto,
+  SignatureRequestResponseDto,
+} from './dto/signature-request.dto';
 import { User } from '../auth/entities/user.entity';
 
 interface AuthRequest extends Request {
   user: User;
 }
 
+/**
+ * Allowed MIME types for uploaded trade documents.
+ * Maps each permitted MIME type to its expected file extension(s).
+ */
+const ALLOWED_MIME_TYPES: ReadonlySet<string> = new Set([
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+]);
+
+/**
+ * File extensions that are explicitly blocked regardless of MIME type.
+ * Prevents script injection and executable uploads masquerading as documents.
+ * Covers common script, executable, and web-exploit extensions.
+ */
+const BLOCKED_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.exe',
+  '.bat',
+  '.cmd',
+  '.sh',
+  '.ps1',
+  '.psm1',
+  '.vbs',
+  '.vbe',
+  '.js',
+  '.jsx',
+  '.ts',
+  '.tsx',
+  '.mjs',
+  '.cjs',
+  '.php',
+  '.asp',
+  '.aspx',
+  '.jsp',
+  '.py',
+  '.rb',
+  '.pl',
+  '.lua',
+  '.dll',
+  '.so',
+  '.dylib',
+  '.elf',
+  '.svg',
+  '.xml',
+  '.html',
+  '.htm',
+  '.xhtml',
+  '.zip',
+  '.tar',
+  '.gz',
+  '.7z',
+  '.rar',
+]);
+
+/**
+ * Maximum allowed filename length. Long filenames can be used to exhaust
+ * path buffers or obscure the real extension.
+ */
+const MAX_FILENAME_LENGTH = 255;
+
+/**
+ * Sanitizes an uploaded filename:
+ * - Strips directory traversal sequences (../, ..\)
+ * - Removes null bytes
+ * - Collapses whitespace
+ * - Truncates to MAX_FILENAME_LENGTH
+ */
+function sanitizeFilename(raw: string): string {
+  return raw
+    .replace(/\.\.[/\\]/g, '') // strip directory traversal
+    .replace(/\0/g, '') // strip null bytes
+    .replace(/\s+/g, ' ') // collapse whitespace
+    .trim()
+    .slice(0, MAX_FILENAME_LENGTH);
+}
+
 @ApiTags('documents')
 @ApiBearerAuth('jwt')
-@Controller('documents')
+@Controller({ path: 'documents', version: '1' })
 export class DocumentsController {
   /** In-memory cache: SHA-256(fileBuffer) → upload result, to avoid redundant IPFS calls */
   private readonly ipfsCache = new Map<string, object>();
+  /** Temporary in-memory chunked upload sessions: fileId → session */
+  private readonly chunkStore = new Map<
+    string,
+    { chunks: Buffer[]; totalChunks: number; receivedCount: number }
+  >();
 
   constructor(
     private readonly documentsService: DocumentsService,
-    private readonly clamScan: ClamScanService,
+    private readonly signatureRequestService: SignatureRequestService,
   ) {}
 
   @Post()
@@ -69,6 +160,12 @@ export class DocumentsController {
           description:
             'Optional detached PGP/GnuPG armored signature of the file, issued by a trusted certifying authority',
         },
+        watermark: {
+          type: 'boolean',
+          description:
+            'Apply a PDF watermark overlay (deal id, date, requester) to the document before storage. Only applies to PDFs.',
+          default: false,
+        },
       },
     },
   })
@@ -78,43 +175,91 @@ export class DocumentsController {
   })
   @ApiResponse({
     status: 400,
-    description: 'Missing file, unsupported type, file too large, or virus detected',
+    description:
+      'Missing file, unsupported type, dangerous extension, or file too large',
   })
+  @ApiResponse({ status: 422, description: 'Virus detected' })
+  @ApiResponse({ status: 503, description: 'Malware scanner unavailable' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   @ApiResponse({ status: 404, description: 'Trade deal not found' })
-  @ApiResponse({ status: 429, description: 'Too Many Requests – IPFS proxy limit is 20 per minute' })
+  @ApiResponse({
+    status: 429,
+    description: 'Too Many Requests – IPFS proxy limit is 20 per minute',
+  })
   async uploadDocument(
     @UploadedFile() file: Express.Multer.File,
     @Body()
-    body: { doc_type: string; trade_deal_id: string; signature_asc?: string },
+    body: {
+      doc_type: string;
+      trade_deal_id: string;
+      signature_asc?: string;
+      watermark?: boolean;
+    },
     @Request() req: AuthRequest,
   ) {
     if (!file) throw new BadRequestException('File is required');
-    if (file.size > 10 * 1024 * 1024)
+
+    // ── 1. Size guard ────────────────────────────────────────────────────────
+    if (file.size > 10 * 1024 * 1024) {
       throw new BadRequestException('File exceeds 10 MB limit');
-    if (
-      !['application/pdf', 'image/png', 'image/jpeg'].includes(file.mimetype)
-    ) {
+    }
+
+    // ── 2. MIME-type allow-list ──────────────────────────────────────────────
+    if (!ALLOWED_MIME_TYPES.has(file.mimetype)) {
       throw new BadRequestException(
         'Unsupported file type. Only PDF, PNG, JPEG allowed',
       );
     }
 
-    // Scan for malware before storing
-    const scanResult = await this.clamScan.scan(file.buffer);
-    if (!scanResult.isClean) {
+    // ── 3. Filename sanitization & dangerous-extension block ─────────────────
+    // Sanitize first so the extension check operates on the cleaned name.
+    const originalName: string = file.originalname ?? '';
+    const sanitized = sanitizeFilename(originalName);
+
+    const ext = extname(sanitized).toLowerCase();
+    if (BLOCKED_EXTENSIONS.has(ext)) {
       throw new BadRequestException(
-        `File rejected: virus detected (${scanResult.virusName})`,
+        `Files with extension "${ext}" are not permitted for security reasons.`,
       );
     }
 
-    // Cache IPFS files locally by content hash to limit external node calls.
-    // If the exact same file bytes were previously uploaded, return the cached
-    // result without hitting the IPFS gateway again.
+    // Double-extension check: "invoice.pdf.exe" → ext is ".exe" (already
+    // caught above), but "invoice.exe.pdf" is trickier — reject any filename
+    // whose second-to-last segment matches a blocked extension.
+    const parts = sanitized.split('.');
+    if (parts.length >= 3) {
+      const penultimateExt = '.' + parts[parts.length - 2].toLowerCase();
+      if (BLOCKED_EXTENSIONS.has(penultimateExt)) {
+        throw new BadRequestException(
+          `Filename contains a potentially dangerous embedded extension ("${penultimateExt}") and was rejected.`,
+        );
+      }
+    }
+
+    // Attach the sanitized filename back onto the multer file object so
+    // downstream services (StorageService, IPFS) use the clean name.
+    file.originalname = sanitized;
+
+    // ── 4. Malware scan ──────────────────────────────────────────────────────
+    // Scan before consulting the cache so every upload request is inspected.
+    await this.documentsService.scanBeforeUpload(file, req.user.id);
+
+    // ── 5. Content-hash deduplication cache ──────────────────────────────────
+    // SHA-256 of raw bytes uniquely identifies file content. If the same bytes
+    // were successfully uploaded before we can skip the IPFS round-trip.
     const contentKey = createHash('sha256').update(file.buffer).digest('hex');
     if (this.ipfsCache.has(contentKey)) {
       return this.ipfsCache.get(contentKey);
     }
+
+    // ── 6. Handle upload (magic-number check + IPFS + Stellar anchor) ────────
+    const watermark = body.watermark
+      ? {
+          dealId: body.trade_deal_id,
+          date: new Date(),
+          requester: req.user.email ?? req.user.id,
+        }
+      : undefined;
 
     const result = await this.documentsService.handleUpload({
       file,
@@ -122,9 +267,287 @@ export class DocumentsController {
       tradeDealId: body.trade_deal_id,
       userId: req.user.id,
       signatureAsc: body.signature_asc,
+      watermark,
     });
 
     this.ipfsCache.set(contentKey, result);
     return result;
+  }
+
+  @Post('upload-chunk')
+  @Throttle({ default: { limit: 100, ttl: 60000 } })
+  @UseGuards(AuthGuard('jwt'))
+  @UseInterceptors(FileInterceptor('chunk'))
+  @ApiOperation({
+    summary: 'Upload a single chunk of a large file (max 5 MB per chunk)',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: [
+        'chunk',
+        'fileId',
+        'chunkIndex',
+        'totalChunks',
+        'docType',
+        'tradeDealId',
+      ],
+      properties: {
+        chunk: { type: 'string', format: 'binary' },
+        fileId: { type: 'string' },
+        chunkIndex: { type: 'integer' },
+        totalChunks: { type: 'integer' },
+        docType: { type: 'string' },
+        tradeDealId: { type: 'string' },
+      },
+    },
+  })
+  @ApiResponse({ status: 201, description: 'Chunk received' })
+  @ApiResponse({ status: 400, description: 'Invalid chunk' })
+  async uploadChunk(
+    @UploadedFile() file: Express.Multer.File,
+    @Body() dto: UploadChunkDto,
+  ) {
+    if (!file) throw new BadRequestException('Chunk file is required');
+    if (file.size > 5 * 1024 * 1024)
+      throw new BadRequestException('Chunk exceeds 5 MB limit');
+
+    const { fileId, chunkIndex, totalChunks } = dto;
+
+    const result = this.documentsService.recordChunk(
+      fileId,
+      chunkIndex,
+      totalChunks,
+      file.buffer,
+    );
+
+    return {
+      fileId,
+      chunkIndex,
+      received: result.receivedCount,
+      total: totalChunks,
+      complete: result.complete,
+      nextChunkIndex: result.nextChunkIndex,
+      cursor: result.cursor,
+      duplicate: result.duplicate,
+    };
+  }
+
+  @Get('upload/:fileId/cursor')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Fetch resume cursor for an incomplete chunked upload' })
+  async getUploadCursor(@Param('fileId') fileId: string) {
+    return this.documentsService.getUploadCursor(fileId);
+  }
+
+  @Post('upload-complete')
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({
+    summary: 'Assemble uploaded chunks and finalize document upload',
+  })
+  @ApiResponse({ status: 201, description: 'Document assembled and uploaded' })
+  @ApiResponse({
+    status: 400,
+    description: 'Missing chunks or invalid request',
+  })
+  async uploadComplete(
+    @Body() dto: UploadCompleteDto,
+    @Request() req: AuthRequest,
+  ) {
+    const { fileId, docType, tradeDealId, fileName, mimeType } = dto;
+
+    const assembled = this.documentsService.assembleUploadedChunks(fileId);
+
+    const file: Express.Multer.File = {
+      fieldname: 'file',
+      originalname: fileName,
+      encoding: '7bit',
+      mimetype: mimeType,
+      size: assembled.length,
+      buffer: assembled,
+      destination: '',
+      filename: fileName,
+      path: '',
+      stream: null as any,
+    };
+
+    const result = await this.documentsService.handleUpload({
+      file,
+      docType,
+      tradeDealId,
+      userId: req.user.id,
+      watermark: dto.watermark
+        ? {
+            dealId: tradeDealId,
+            date: new Date(),
+            requester: req.user.email ?? req.user.id,
+          }
+        : undefined,
+    });
+
+    return result;
+  }
+
+  // ─── Watermark ─────────────────────────────────────────────────────────────
+
+  @Post(':id/watermark')
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({
+    summary: 'Regenerate an existing document with a PDF watermark overlay',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        dealId: { type: 'string', description: 'Trade deal identifier' },
+        requester: {
+          type: 'string',
+          description: 'Name/email of the user requesting the watermark',
+        },
+        date: {
+          type: 'string',
+          format: 'date-time',
+          description: 'Date to embed in the watermark (defaults to now)',
+        },
+        opacity: {
+          type: 'number',
+          description: 'Watermark opacity (0.02–0.25, default 0.08)',
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Document regenerated with watermark and re-uploaded',
+  })
+  @ApiResponse({ status: 404, description: 'Document not found' })
+  async regenerateWithWatermark(
+    @Param('id') id: string,
+    @Body()
+    body: {
+      dealId: string;
+      requester: string;
+      date?: string;
+      opacity?: number;
+    },
+  ) {
+    const watermarkOptions: {
+      dealId: string;
+      date: Date;
+      requester: string;
+      opacity?: number;
+    } = {
+      dealId: body.dealId,
+      requester: body.requester,
+      date: body.date ? new Date(body.date) : new Date(),
+      opacity: body.opacity,
+    };
+
+    return this.documentsService.regenerateWithWatermark(id, watermarkOptions);
+  }
+
+  // ─── Signing queue ──────────────────────────────────────────────────────────
+
+  @Post('signature-request')
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({
+    summary: 'Create a co-signer signature request with a JWT-scoped signing link',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Signature request created; co-signer notified',
+    type: SignatureRequestResponseDto,
+  })
+  @ApiResponse({ status: 404, description: 'Document or co-signer not found' })
+  async createSignatureRequest(
+    @Body() dto: CreateSignatureRequestDto,
+    @Request() req: AuthRequest,
+  ) {
+    const result = await this.signatureRequestService.createSignatureRequest(
+      dto.documentId,
+      dto.coSignerId,
+      req.user.id,
+      dto.ttlSeconds ? parseInt(dto.ttlSeconds, 10) : undefined,
+    );
+
+    return {
+      id: result.id,
+      documentId: result.documentId,
+      coSignerId: result.coSignerId,
+      requesterId: result.requesterId,
+      status: result.status,
+      signingLink: result.signingLink,
+      expiresAt: result.expiresAt,
+      createdAt: result.createdAt,
+    };
+  }
+
+  @Get(':documentId/signature-requests')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({
+    summary: 'List signature requests for a document (status tracking)',
+  })
+  async getDocumentSignatureRequests(
+    @Param('documentId') documentId: string,
+  ) {
+    return this.signatureRequestService.getDocumentSignatureRequests(documentId);
+  }
+
+  @Get('signature-request/:id')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Get a single signature request by id' })
+  async getSignatureRequest(@Param('id') id: string) {
+    return this.signatureRequestService.getSignatureRequest(id);
+  }
+
+  @Post('sign')
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
+  @ApiOperation({
+    summary: 'Submit a co-signer signature (OpenPGP or SEP-10 / Stellar wallet)',
+  })
+  @ApiResponse({ status: 200, description: 'Signature processed and POE anchored' })
+  @ApiResponse({ status: 401, description: 'Invalid or expired signing token' })
+  async signDocument(@Body() dto: SignDocumentDto) {
+    if (dto.signatureMethod === 'openpgp') {
+      return this.signatureRequestService.processOpenPgpSignature(
+        dto.documentId,
+        dto.signingToken,
+        dto.signatureAsc!,
+      );
+    }
+
+    if (dto.signatureMethod === 'sep10') {
+      return this.signatureRequestService.processSep10Signature(
+        dto.documentId,
+        dto.signingToken,
+        dto.stellarEnvelope!,
+      );
+    }
+
+    throw new BadRequestException(
+      `Unsupported signature method: ${dto.signatureMethod}`,
+    );
+  }
+
+  @Post('signature-request/:id/revoke')
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Revoke a pending signature request' })
+  @ApiResponse({ status: 200, description: 'Signature request revoked' })
+  @ApiResponse({ status: 409, description: 'Request is not pending' })
+  async revokeSignatureRequest(@Param('id') id: string) {
+    return this.signatureRequestService.revokeSignatureRequest(id);
+  }
+
+  @Post('signature-request/:id/verify-token')
+  @ApiOperation({
+    summary: 'Verify a signing token without submitting a signature',
+  })
+  async verifySigningToken(@Body() body: { signingToken: string }) {
+    return this.signatureRequestService.verifySigningToken(body.signingToken);
   }
 }

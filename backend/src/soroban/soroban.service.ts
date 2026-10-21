@@ -20,7 +20,10 @@ import {
   Address,
   xdr,
   scValToNative,
+  Operation,
+  SorobanDataBuilder,
 } from '@stellar/stellar-sdk';
+import { MAX_FEE_BPS } from '../database/entities/fee-configuration.entity';
 
 export interface CampaignConfig {
   admin: string;
@@ -81,6 +84,25 @@ export class SorobanService {
     args: xdr.ScVal[],
     signerKeypair?: Keypair,
   ): Promise<string> {
+    const { hash } = await this.invokeContractWithResult(
+      contractId,
+      method,
+      args,
+      signerKeypair,
+    );
+    return hash;
+  }
+
+  /**
+   * Same as invokeContract, but also returns the contract's return value
+   * (converted to a native JS value) when the transaction succeeded.
+   */
+  async invokeContractWithResult(
+    contractId: string,
+    method: string,
+    args: xdr.ScVal[],
+    signerKeypair?: Keypair,
+  ): Promise<{ hash: string; result: unknown }> {
     const signer = signerKeypair ?? this.platformKeypair;
     const account = await this.rpcServer.getAccount(signer.publicKey());
 
@@ -89,6 +111,10 @@ export class SorobanService {
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
       networkPassphrase: this.networkPassphrase,
+      timebounds: {
+        minTime: 0,
+        maxTime: Math.floor(Date.now() / 1000) + 30,
+      },
     })
       .addOperation(contract.call(method, ...args))
       .setTimeout(30)
@@ -138,11 +164,16 @@ export class SorobanService {
       throw new Error(`Soroban tx failed or timed out: ${getResult.status}`);
     }
 
+    const result =
+      getResult.returnValue !== undefined
+        ? scValToNative(getResult.returnValue)
+        : null;
+
     this.logger.info(
       { contractId, method, hash },
       'Soroban contract call succeeded',
     );
-    return hash;
+    return { hash, result };
   }
 
   /**
@@ -161,9 +192,12 @@ export class SorobanService {
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
       networkPassphrase: this.networkPassphrase,
+      timebounds: {
+        minTime: 0,
+        maxTime: Math.floor(Date.now() / 1000) + 30,
+      },
     })
       .addOperation(contract.call(method, ...args))
-      .setTimeout(30)
       .build();
 
     const simResult = await this.rpcServer.simulateTransaction(tx);
@@ -238,6 +272,17 @@ export class SorobanService {
     return this.invokeContract(contractId, 'mark_failed', args);
   }
 
+  async refundCampaignInvestor(
+    contractId: string,
+    investorAddress: string,
+  ): Promise<string> {
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      new Address(investorAddress).toScVal(),
+    ];
+    return this.invokeContract(contractId, 'refund_by_admin', args);
+  }
+
   async getCampaignState(contractId: string): Promise<unknown> {
     return this.readContract(contractId, 'get_state', []);
   }
@@ -255,7 +300,158 @@ export class SorobanService {
     return Number(result ?? 0);
   }
 
+  // ── Dispute resolution (issue #1004) ────────────────────────────────────────
+
+  /**
+   * Raises a dispute on a milestone, freezing its release and opening the
+   * contract's arbitrator voting window. The platform account is a dispute
+   * party (it is the campaign admin), so it can sign this call; the contract
+   * itself rejects callers that are not admin/farmer/staked investors.
+   */
+  async raiseCampaignDispute(
+    contractId: string,
+    milestoneIndex: number,
+  ): Promise<string> {
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      nativeToScVal(milestoneIndex, { type: 'u32' }),
+    ];
+    return this.invokeContract(contractId, 'raise_dispute', args);
+  }
+
+  /**
+   * Attaches an evidence reference (document URI) to an undecided dispute.
+   */
+  async submitDisputeEvidence(
+    contractId: string,
+    milestoneIndex: number,
+    uri: string,
+  ): Promise<string> {
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      nativeToScVal(milestoneIndex, { type: 'u32' }),
+      nativeToScVal(uri, { type: 'string' }),
+    ];
+    return this.invokeContract(contractId, 'submit_dispute_evidence', args);
+  }
+
+  /**
+   * Executes the recorded verdict for a dispute: releases the tranche to the
+   * farmer, or converts remaining escrow into investor refunds. Requires the
+   * voting window to have closed (or a quorum verdict to exist).
+   */
+  async resolveCampaignDispute(
+    contractId: string,
+    milestoneIndex: number,
+  ): Promise<string> {
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      nativeToScVal(milestoneIndex, { type: 'u32' }),
+    ];
+    return this.invokeContract(contractId, 'resolve_dispute', args);
+  }
+
+  /**
+   * Authoritative on-chain dispute record for one milestone: phase, voting
+   * deadline, tally, evidence and outcome. `null` when no dispute was raised.
+   */
+  async getCampaignDispute(
+    contractId: string,
+    milestoneIndex: number,
+  ): Promise<unknown> {
+    const args = [nativeToScVal(milestoneIndex, { type: 'u32' })];
+    return this.readContract(contractId, 'get_dispute', args);
+  }
+
+  /** Voting window, in seconds, granted to disputes opened from now on. */
+  async getDisputeVotingWindow(contractId: string): Promise<number> {
+    const result = await this.readContract(
+      contractId,
+      'get_dispute_voting_window',
+      [],
+    );
+    return Number(result ?? 0);
+  }
+
+  /**
+   * Addresses allowed to vote. Falls back to the single legacy `arbitrator`
+   * storage entry when no pool was configured, matching the contract.
+   */
+  async getArbitratorPool(contractId: string): Promise<string[]> {
+    const result = await this.readContract(
+      contractId,
+      'get_arbitrator_pool',
+      [],
+    );
+    if (Array.isArray(result)) return result.map(String);
+    return [];
+  }
+
   // ── ProjectFactory contract methods ─────────────────────────────────────────
+
+  async deployFarmCampaign(
+    dealId: string,
+    params: {
+      farmerAddress: string;
+      targetAmount: bigint;
+      deadline: number;
+      feeBps: number;
+    },
+  ): Promise<string> {
+    const now = Math.floor(Date.now() / 1000);
+    if (typeof params.targetAmount !== 'bigint' || params.targetAmount <= 0n) {
+      throw new Error('Campaign target must be greater than zero');
+    }
+    if (!Number.isSafeInteger(params.deadline) || params.deadline <= now) {
+      throw new Error('Campaign deadline must be in the future');
+    }
+    if (
+      !Number.isSafeInteger(params.feeBps) ||
+      params.feeBps < 0 ||
+      params.feeBps > MAX_FEE_BPS
+    ) {
+      throw new Error(`Campaign fee must be between 0 and ${MAX_FEE_BPS} bps`);
+    }
+
+    const factoryContractId = this.config.get<string>(
+      'SOROBAN_FACTORY_CONTRACT_ID',
+    );
+    if (!factoryContractId) {
+      throw new Error('SOROBAN_FACTORY_CONTRACT_ID is not configured');
+    }
+
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      new Address(params.farmerAddress).toScVal(),
+      nativeToScVal(params.targetAmount, { type: 'i128' }),
+      nativeToScVal(params.deadline, { type: 'u64' }),
+      nativeToScVal(params.feeBps, { type: 'u32' }),
+    ];
+
+    const { hash, result } = await this.invokeContractWithResult(
+      factoryContractId,
+      'create_campaign',
+      args,
+    );
+
+    const contractAddress = typeof result === 'string' ? result : null;
+    if (!contractAddress) {
+      throw new Error(
+        `Factory deploy did not return a contract address (tx ${hash})`,
+      );
+    }
+
+    this.logger.info(
+      { dealId, factoryContractId, campaignContractId: contractAddress, hash },
+      'FarmCampaign deployed via ProjectFactory',
+    );
+    return contractAddress;
+  }
+
+  /** Platform (deployer) wallet public key — used for audit logging (#830). */
+  platformPublicKey(): string {
+    return this.platformKeypair.publicKey();
+  }
 
   async registerCampaignOnChain(
     factoryContractId: string,
@@ -283,6 +479,26 @@ export class SorobanService {
   }
 
   // ── MarketplaceSettlement contract methods ──────────────────────────────────
+
+  /**
+   * Invokes the marketplace_settlement contract to create and settle a secondary trade order.
+   */
+  async invokeMarketplaceSettlement(
+    settlementContractId: string,
+    orderId: string,
+    buyerAddress: string,
+    sellerAddress: string,
+    amountStroops: number,
+  ): Promise<string> {
+    const args = [
+      new Address(buyerAddress).toScVal(),
+      nativeToScVal(orderId, { type: 'string' }),
+      new Address(sellerAddress).toScVal(),
+      nativeToScVal(amountStroops, { type: 'i128' }),
+      new xdr.ScVal(xdr.ScVal.scvVec([])), // Empty investor_shares for direct trades
+    ];
+    return this.invokeContract(settlementContractId, 'create_order', args);
+  }
 
   async confirmMarketplaceDelivery(
     settlementContractId: string,
@@ -312,5 +528,435 @@ export class SorobanService {
   ): Promise<unknown> {
     const args = [nativeToScVal(orderId, { type: 'string' })];
     return this.readContract(settlementContractId, 'get_order', args);
+  }
+
+  // ── Rent / State Expiration Management (#698) ────────────────────────────────
+
+  /**
+   * Extends the TTL (Time-To-Live) of a contract's persistent storage so that
+   * the contract state does not expire and become archived on the Soroban ledger.
+   *
+   * Soroban charges "rent" for persistent storage. If a contract's storage entries
+   * are not refreshed before their ledger sequence expiry, they become ARCHIVED and
+   * the contract becomes unusable — escrow payouts would fail.
+   *
+   * @param contractId  - Soroban contract address (C…)
+   * @param extendTo    - Target TTL in ledgers from the current ledger sequence.
+   *                      Default: 535_680 (~30 days at 5 s/ledger on testnet).
+   */
+  async extendContractTtl(
+    contractId: string,
+    extendTo = 535_680,
+  ): Promise<string> {
+    const signer = this.platformKeypair;
+    const account = await this.rpcServer.getAccount(signer.publicKey());
+
+    const contract = new Contract(contractId);
+    // getFootprint() returns the LedgerKey set covering the contract instance
+    // and its backing WASM code — the full footprint needed for TTL extension.
+    const footprint = contract.getFootprint();
+
+    const sorobanData = new SorobanDataBuilder()
+      .setReadOnly([footprint])
+      .build();
+
+    let tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.networkPassphrase,
+    })
+      .setSorobanData(sorobanData)
+      .addOperation(Operation.extendFootprintTtl({ extendTo }))
+      .setTimeout(30)
+      .build();
+
+    // prepareTransaction simulates + assembles the transaction with correct fees
+    tx = await this.rpcServer.prepareTransaction(tx);
+    tx.sign(signer);
+
+    const sendResult = await this.rpcServer.sendTransaction(tx);
+    if (sendResult.status === 'ERROR') {
+      throw new Error(
+        `extend_footprint_ttl submission failed for ${contractId}: ${sendResult.errorResult}`,
+      );
+    }
+
+    const hash = sendResult.hash;
+    await this.waitForTransaction(hash);
+
+    this.logger.info(
+      { contractId, extendTo, hash },
+      'Contract TTL extended successfully',
+    );
+    return hash;
+  }
+
+  /**
+   * Restores an ARCHIVED contract instance so it can be used again.
+   *
+   * When a contract's persistent storage expires it enters the ARCHIVED state.
+   * A restore_footprint operation pays the required rent and unarchives the
+   * storage entries, bringing the contract back to a usable state.
+   *
+   * After restoration, call extendContractTtl() to set a long TTL so the
+   * contract doesn't immediately expire again.
+   *
+   * @param contractId - Soroban contract address (C…) to restore
+   */
+  async restoreArchivedContract(contractId: string): Promise<string> {
+    const signer = this.platformKeypair;
+    const account = await this.rpcServer.getAccount(signer.publicKey());
+
+    const contract = new Contract(contractId);
+    const footprint = contract.getFootprint();
+
+    const sorobanData = new SorobanDataBuilder()
+      .setReadWrite([footprint])
+      .build();
+
+    let tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.networkPassphrase,
+    })
+      .setSorobanData(sorobanData)
+      .addOperation(Operation.restoreFootprint({}))
+      .setTimeout(30)
+      .build();
+
+    tx = await this.rpcServer.prepareTransaction(tx);
+    tx.sign(signer);
+
+    const sendResult = await this.rpcServer.sendTransaction(tx);
+    if (sendResult.status === 'ERROR') {
+      throw new Error(
+        `restore_footprint submission failed for ${contractId}: ${sendResult.errorResult}`,
+      );
+    }
+
+    const hash = sendResult.hash;
+    await this.waitForTransaction(hash);
+
+    this.logger.info(
+      { contractId, hash },
+      'Archived contract restored successfully',
+    );
+    return hash;
+  }
+
+  /**
+   * Returns the current TTL (ledgers until expiry) for a contract's instance
+   * storage entry, or null if the entry is not found / already archived.
+   */
+  async getContractTtl(contractId: string): Promise<number | null> {
+    try {
+      const contract = new Contract(contractId);
+      const instanceKey = xdr.LedgerKey.contractData(
+        new xdr.LedgerKeyContractData({
+          contract: contract.address().toScAddress(),
+          key: xdr.ScVal.scvLedgerKeyContractInstance(),
+          durability: xdr.ContractDataDurability.persistent(),
+        }),
+      );
+
+      const response = await this.rpcServer.getLedgerEntries(instanceKey);
+      if (!response.entries || response.entries.length === 0) return null;
+
+      const entry = response.entries[0];
+      const currentLedger = response.latestLedger;
+      const expiresAt = (entry as any).liveUntilLedgerSeq as number | undefined;
+      if (expiresAt == null) return null;
+
+      return Math.max(0, expiresAt - currentLedger);
+    } catch (err: any) {
+      this.logger.warn(
+        { contractId, err: err.message },
+        'Failed to fetch contract TTL',
+      );
+      return null;
+    }
+  }
+
+  // ── Contract Upgrade Management (#901) ─────────────────────────────────────
+
+  /**
+   * Upgrades a Soroban contract to a new WASM hash.
+   * Invokes the contract's upgrade() method with the platform admin keypair.
+   */
+  async upgradeContract(
+    contractId: string,
+    wasmHashHex: string,
+  ): Promise<string> {
+    const wasmHashBytes = Buffer.from(wasmHashHex, 'hex');
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      xdr.ScVal.scvBytes(wasmHashBytes),
+    ];
+    return this.invokeContract(contractId, 'upgrade', args);
+  }
+
+  /**
+   * Invokes farm_campaign_settlement.settle() to finalize a campaign (#899).
+   */
+  async settleCampaign(
+    settlementContractId: string,
+    campaignId: string,
+    harvestAmount: number,
+    qualityGrade: number,
+  ): Promise<string> {
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      nativeToScVal(campaignId, { type: 'string' }),
+      nativeToScVal(BigInt(Math.round(harvestAmount)), { type: 'i128' }),
+      nativeToScVal(qualityGrade, { type: 'u32' }),
+    ];
+    return this.invokeContract(settlementContractId, 'settle', args);
+  }
+
+  // ── Private helpers ─────────────────────────────────────────────────────────
+
+  private async waitForTransaction(hash: string): Promise<void> {
+    let getResult = await this.rpcServer.getTransaction(hash);
+    let attempts = 0;
+
+    while (
+      getResult.status === rpc.Api.GetTransactionStatus.NOT_FOUND &&
+      attempts < 20
+    ) {
+      await new Promise((r) => setTimeout(r, 1500));
+      getResult = await this.rpcServer.getTransaction(hash);
+      attempts++;
+    }
+
+    if (getResult.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
+      throw new Error(
+        `Transaction timed out or failed: ${getResult.status} (hash: ${hash})`,
+      );
+    }
+  }
+
+  // ── RevenueDistributor contract methods (Issue #873) ────────────────────────
+
+  /**
+   * Registers a token holder in the revenue_distributor contract.
+   * Must be called for each confirmed investor before triggering distribution.
+   *
+   * @param contractId    Revenue distributor contract address
+   * @param holderAddress Investor's Stellar wallet address
+   * @param balance       Token balance in stroops (integer)
+   */
+  async registerRevenueHolder(
+    contractId: string,
+    holderAddress: string,
+    balance: bigint,
+  ): Promise<string> {
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      new Address(holderAddress).toScVal(),
+      nativeToScVal(balance, { type: 'i128' }),
+    ];
+    return this.invokeContract(contractId, 'register_holder', args);
+  }
+
+  /**
+   * Triggers pro-rata revenue distribution to all registered holders.
+   *
+   * After calling this, the service cross-checks on-chain payouts against
+   * expected amounts and fires a discrepancy alert if any payout differs
+   * from expected by > 0.001 USDC (1_000 stroops).
+   *
+   * @param contractId   Revenue distributor contract address
+   * @param usdcToken    USDC asset contract address
+   * @param totalAmount  Total USDC to distribute in stroops
+   * @param expectedPayouts  Map of holderAddress -> expected amount for cross-check
+   */
+  async triggerRevenueDistribution(
+    contractId: string,
+    usdcToken: string,
+    totalAmount: bigint,
+    expectedPayouts?: Map<string, bigint>,
+  ): Promise<{
+    hash: string;
+    discrepancies: Array<{ holder: string; expected: bigint; actual: bigint }>;
+  }> {
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      new Address(usdcToken).toScVal(),
+      nativeToScVal(totalAmount, { type: 'i128' }),
+    ];
+
+    const hash = await this.invokeContract(contractId, 'distribute', args);
+    this.logger.info(
+      { contractId, totalAmount: totalAmount.toString(), hash },
+      'Revenue distribution triggered',
+    );
+
+    const discrepancies: Array<{
+      holder: string;
+      expected: bigint;
+      actual: bigint;
+    }> = [];
+
+    if (expectedPayouts && expectedPayouts.size > 0) {
+      // Cross-check: read actual payouts from the contract
+      try {
+        const actualMap = (await this.readContract(
+          contractId,
+          'get_holders',
+          [],
+        )) as Record<string, unknown> | null;
+        if (actualMap) {
+          const TOLERANCE_STROOPS = BigInt(1_000); // 0.001 USDC
+          for (const [holder, expected] of expectedPayouts.entries()) {
+            const actual = BigInt((actualMap as any)[holder] ?? 0);
+            const diff =
+              expected > actual ? expected - actual : actual - expected;
+            if (diff > TOLERANCE_STROOPS) {
+              discrepancies.push({ holder, expected, actual });
+              this.logger.error(
+                {
+                  holder,
+                  expected: expected.toString(),
+                  actual: actual.toString(),
+                  diff: diff.toString(),
+                },
+                'Revenue distribution discrepancy detected',
+              );
+            }
+          }
+        }
+      } catch (err: any) {
+        this.logger.warn(
+          { err: err.message },
+          'Could not cross-check distribution payouts',
+        );
+      }
+    }
+
+    return { hash, discrepancies };
+  }
+
+  /**
+   * Returns the current distribution count from the revenue_distributor contract.
+   */
+  async getRevenueDistributionCount(contractId: string): Promise<number> {
+    const result = await this.readContract(
+      contractId,
+      'get_distribution_count',
+      [],
+    );
+    return Number(result ?? 0);
+  }
+
+  // ── Federated Learning participant & reward helpers (#1191) ─────────────────
+
+  /**
+   * Verifies that a federated learning participant address is registered and
+   * active on-chain. Used during participant onboarding to ensure only
+   * verified platforms join the network.
+   *
+   * @param registryContractId Federated learning registry contract address
+   * @param participantAddress Participant's Stellar wallet address
+   */
+  async verifyFederatedParticipant(
+    registryContractId: string,
+    participantAddress: string,
+  ): Promise<boolean> {
+    const args = [new Address(participantAddress).toScVal()];
+    const result = await this.readContract(
+      registryContractId,
+      'is_participant',
+      args,
+    );
+    return Boolean(result);
+  }
+
+  /**
+   * Registers a new participant in the federated learning registry contract.
+   * Called during onboarding after off-chain identity checks pass.
+   *
+   * @param registryContractId Federated learning registry contract address
+   * @param participantAddress Participant's Stellar wallet address
+   * @param metadataHash       Hash of participant metadata (never raw data)
+   */
+  async registerFederatedParticipant(
+    registryContractId: string,
+    participantAddress: string,
+    metadataHash: string,
+  ): Promise<string> {
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      new Address(participantAddress).toScVal(),
+      nativeToScVal(metadataHash, { type: 'string' }),
+    ];
+    return this.invokeContract(registryContractId, 'register_participant', args);
+  }
+
+  /**
+   * Records a participant's contribution (e.g. a completed training round)
+   * on-chain so rewards can be settled transparently.
+   *
+   * @param registryContractId Federated learning registry contract address
+   * @param participantAddress Participant's Stellar wallet address
+   * @param roundId            Federated learning round identifier
+   * @param contributionScore  Normalized contribution score (0–10_000 bps)
+   */
+  async recordFederatedContribution(
+    registryContractId: string,
+    participantAddress: string,
+    roundId: string,
+    contributionScore: number,
+  ): Promise<string> {
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      new Address(participantAddress).toScVal(),
+      nativeToScVal(roundId, { type: 'string' }),
+      nativeToScVal(contributionScore, { type: 'u32' }),
+    ];
+    return this.invokeContract(
+      registryContractId,
+      'record_contribution',
+      args,
+    );
+  }
+
+  /**
+   * Disburses a contribution reward (in USDC stroops) to a participant.
+   *
+   * @param registryContractId Federated learning registry contract address
+   * @param participantAddress Participant's Stellar wallet address
+   * @param usdcToken          USDC asset contract address
+   * @param amountStroops      Reward amount in USDC stroops
+   */
+  async disburseFederatedReward(
+    registryContractId: string,
+    participantAddress: string,
+    usdcToken: string,
+    amountStroops: bigint,
+  ): Promise<string> {
+    if (typeof amountStroops !== 'bigint' || amountStroops <= 0n) {
+      throw new Error('Federated reward amount must be greater than zero');
+    }
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      new Address(participantAddress).toScVal(),
+      new Address(usdcToken).toScVal(),
+      nativeToScVal(amountStroops, { type: 'i128' }),
+    ];
+    return this.invokeContract(registryContractId, 'disburse_reward', args);
+  }
+
+  /**
+   * Reads a participant's accumulated contribution score from the registry.
+   */
+  async getFederatedContributionScore(
+    registryContractId: string,
+    participantAddress: string,
+  ): Promise<number> {
+    const args = [new Address(participantAddress).toScVal()];
+    const result = await this.readContract(
+      registryContractId,
+      'get_contribution_score',
+      args,
+    );
+    return Number(result ?? 0);
   }
 }

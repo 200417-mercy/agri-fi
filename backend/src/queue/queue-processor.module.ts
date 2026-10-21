@@ -8,7 +8,7 @@ import { TradeDeal } from '../trade-deals/entities/trade-deal.entity';
 import { Investment } from '../investments/entities/investment.entity';
 import { User } from '../auth/entities/user.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
-import { QueueModule } from './queue.module';
+import { IdempotencyService } from './idempotency.service';
 
 @Module({
   imports: [
@@ -19,6 +19,6 @@ import { QueueModule } from './queue.module';
     NotificationsModule,
     QueueModule,
   ],
-  providers: [QueueProcessor],
+  providers: [QueueProcessor, IdempotencyService],
 })
 export class QueueProcessorModule {}

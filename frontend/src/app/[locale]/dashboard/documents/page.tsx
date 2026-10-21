@@ -1,10 +1,21 @@
 'use client';
 
+import { getAuthToken } from '@/lib/auth-token';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import nextDynamic from 'next/dynamic';
 import { apiClient, User, Document } from '@/lib/api';
 import DashboardLayout from '@/components/DashboardLayout';
 import { PdfViewer } from '@/components/ui/PdfViewer';
+
+// Real-time collaboration presence for the open document (#1234).
+const CollaborationPresence = nextDynamic(
+  () =>
+    import('@/components/collaboration/CollaborationPresence').then(
+      (m) => ({ default: m.CollaborationPresence }),
+    ),
+  { ssr: false, loading: () => null },
+);
 
 interface DealDocument extends Document {
   dealId?: string;
@@ -44,7 +55,7 @@ export default function DocumentsPage() {
       setUser(u);
 
       try {
-        const token = localStorage.getItem('auth_token');
+        const token = getAuthToken();
         const res = await fetch('/api/documents', {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -155,7 +166,11 @@ export default function DocumentsPage() {
 
                   {/* Inline PDF viewer */}
                   {isOpen && pdf && (
-                    <div className="border-t border-slate-100 p-4">
+                    <div className="border-t border-slate-100 p-4 space-y-3">
+                      <CollaborationPresence
+                        resourceType="document"
+                        resourceId={doc.id}
+                      />
                       <PdfViewer
                         url={docUrl}
                         fileName={`${docLabel(doc.doc_type)}.pdf`}

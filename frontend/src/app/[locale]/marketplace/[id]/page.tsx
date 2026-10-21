@@ -1,13 +1,56 @@
 import { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { setRequestLocale } from 'next-intl/server';
+import nextDynamic from 'next/dynamic';
 import { getDealById, Milestone } from '@/lib/api';
 import FundingProgressBar from '@/components/FundingProgressBar';
 import StatusBadge from '@/components/StatusBadge';
-import { ShipmentTimeline } from '@/components/ShipmentTimeline';
-import { ShipmentMap } from '@/components/dashboard/ShipmentMap';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import InvestmentSection from '@/components/InvestmentSection';
+import DealStats from '@/components/marketplace/DealStats';
+
+// Heavy client components — loaded as separate chunks that are only fetched
+// when the browser renders this page, not included in the shared JS bundle.
+const ShipmentTimeline = nextDynamic(
+  () => import('@/components/ShipmentTimeline').then(m => ({ default: m.ShipmentTimeline })),
+  {
+    loading: () => <div className="h-40 skeleton rounded-2xl" aria-label="Loading timeline…" />,
+  },
+);
+
+const ShipmentMap = nextDynamic(
+  () => import('@/components/dashboard/ShipmentMap').then(m => ({ default: m.ShipmentMap })),
+  {
+    ssr: false,
+    loading: () => <div className="h-64 skeleton rounded-2xl" aria-label="Loading map…" />,
+  },
+);
+
+const ActivityFeed = nextDynamic(
+  () => import('@/components/deals/ActivityFeed').then(m => ({ default: m.ActivityFeed })),
+  {
+    ssr: false,
+    loading: () => <div className="h-48 skeleton rounded-2xl" aria-label="Loading activity feed…" />,
+  },
+);
+
+const DealHealthWidget = nextDynamic(
+  () => import('@/components/deals/DealHealthWidget').then(m => ({ default: m.DealHealthWidget })),
+  {
+    ssr: false,
+    loading: () => <div className="h-40 skeleton rounded-2xl" aria-label="Loading deal health…" />,
+  },
+);
+
+// Real-time collaboration presence (#1234) — client-only, connects over WebSocket.
+const CollaborationPresence = nextDynamic(
+  () => import('@/components/collaboration/CollaborationPresence').then(m => ({ default: m.CollaborationPresence })),
+  {
+    ssr: false,
+    loading: () => <div className="h-12 skeleton rounded-2xl" aria-label="Loading collaborators…" />,
+  },
+);
 
 export const dynamic = 'force-static';
 export const dynamicParams = false;
@@ -49,9 +92,14 @@ export async function generateMetadata({
     const roiLabel =
       roi > 0 ? `+${roi.toFixed(1)}% target ROI` : 'Earn returns on delivery';
 
-    const title = `Invest in ${commodity} — $${totalValue.toLocaleString()} USD | AgriFi`;
+    const formattedTotalValue = new Intl.NumberFormat(params.locale, {
+      style: 'currency',
+      currency: 'USD',
+      maximumFractionDigits: 0,
+    }).format(totalValue);
+    const title = `Invest in ${commodity} — ${formattedTotalValue} USD | AgriFi`;
     const description =
-      `${Number(deal.quantity).toLocaleString()} ${deal.quantity_unit} of ${commodity}. ` +
+      `${new Intl.NumberFormat(params.locale).format(Number(deal.quantity))} ${deal.quantity_unit} of ${commodity}. ` +
       `${fundingPct}% funded · ${roiLabel}. ` +
       `Delivery by ${new Date(deal.delivery_date).toLocaleDateString('en', {
         month: 'long',
@@ -98,7 +146,9 @@ export async function generateMetadata({
 
 const MILESTONE_ORDER = ['farm', 'warehouse', 'port', 'importer'];
 
-export default async function DealDetailPage({ params }: { params: { id: string } }) {
+export default async function DealDetailPage({ params }: { params: { id: string; locale: string } }) {
+  // force-static: next-intl can't read the locale from middleware headers.
+  setRequestLocale(params.locale);
   let deal: Awaited<ReturnType<typeof getDealById>> = null;
   try { deal = await getDealById(params.id); } catch { notFound(); }
   if (!deal) notFound();
@@ -133,6 +183,9 @@ export default async function DealDetailPage({ params }: { params: { id: string 
       <main className="min-h-screen bg-slate-50 px-4 py-8">
         <div className="max-w-4xl mx-auto space-y-5">
 
+          {/* Real-time collaboration presence — Issue #1234 */}
+          <CollaborationPresence resourceType="deal" resourceId={deal.id} />
+
           {/* Hero card */}
           <div className="card overflow-hidden">
             {/* Progress bar top accent */}
@@ -147,23 +200,62 @@ export default async function DealDetailPage({ params }: { params: { id: string 
                   <h1 className="text-3xl font-black text-slate-900 capitalize tracking-tight">{deal.commodity}</h1>
                   <p className="text-slate-400 font-mono text-sm mt-1">{deal.token_symbol}</p>
                 </div>
-                <StatusBadge status={deal.status} />
+                <div className="flex flex-col items-end gap-2">
+                  <div className="flex items-center gap-2">
+                    {deal.esg_score != null && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                        <span>🌱</span> ESG {deal.esg_rating ?? 'Rated'} · {deal.esg_score}
+                      </span>
+                    )}
+                    <StatusBadge status={deal.status} />
+                  </div>
+                  <Link href={`/marketplace/${deal.id}/trade`} className="btn-secondary text-xs px-3 py-1.5">
+                    Trade on DEX →
+                  </Link>
+                </div>
               </div>
 
               {/* Stats grid */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-                {[
-                  { label: 'Quantity',     value: `${Number(deal.quantity).toLocaleString()} ${deal.quantity_unit}` },
-                  { label: 'Total Value',  value: `$${Number(deal.total_value).toLocaleString()}` },
-                  { label: 'Token Price',  value: `$${(Number(deal.total_value) / Number(deal.token_count)).toFixed(0)}` },
-                  { label: 'Delivery',     value: new Date(deal.delivery_date).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' }) },
-                ].map(s => (
-                  <div key={s.label} className="bg-slate-50 rounded-2xl p-4">
-                    <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wide">{s.label}</p>
-                    <p className="font-bold text-slate-900 mt-1">{s.value}</p>
+              <DealStats
+                quantity={deal.quantity}
+                quantityUnit={deal.quantity_unit}
+                totalValue={deal.total_value}
+                tokenPrice={Number(deal.total_value) / Number(deal.token_count)}
+                tokensRemaining={deal.tokens_remaining}
+                deliveryDate={deal.delivery_date}
+              />
+
+              {/* ESG Impact Highlight Card (#1012) */}
+              {deal.esg_score != null && (
+                <div className="mb-6 p-4 rounded-2xl bg-gradient-to-br from-emerald-50/60 to-teal-50/60 border border-emerald-100">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xl">🌍</span>
+                      <div>
+                        <h4 className="text-xs font-bold text-emerald-950 uppercase tracking-wider">Institutional Impact Score</h4>
+                        <p className="text-xs text-emerald-800">Verified environmental, social, and governance evaluation</p>
+                      </div>
+                    </div>
+                    <span className="text-sm font-extrabold px-2.5 py-1 rounded-xl bg-white shadow-sm text-emerald-700 border border-emerald-200">
+                      Tier {deal.esg_rating ?? 'A'}
+                    </span>
                   </div>
-                ))}
-              </div>
+                  <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                    <div className="p-2.5 rounded-xl bg-white/80 border border-emerald-100">
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase">Environmental</p>
+                      <p className="text-sm font-bold text-emerald-700 mt-0.5">{deal.environmental_score ?? '—'}/100</p>
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-white/80 border border-emerald-100">
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase">Social</p>
+                      <p className="text-sm font-bold text-teal-700 mt-0.5">{deal.social_score ?? '—'}/100</p>
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-white/80 border border-emerald-100">
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase">Governance</p>
+                      <p className="text-sm font-bold text-indigo-700 mt-0.5">{deal.governance_score ?? '—'}/100</p>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Funding progress */}
               <FundingProgressBar
@@ -171,17 +263,13 @@ export default async function DealDetailPage({ params }: { params: { id: string 
                 totalInvested={Number(deal.total_invested)}
               />
 
-              {/* Tokens remaining */}
-              {deal.tokens_remaining > 0 && (
-                <p className="text-xs text-slate-400 mt-2">
-                  <span className="font-semibold text-slate-600">{deal.tokens_remaining.toLocaleString()}</span> tokens remaining
-                </p>
-              )}
-
               {/* Investment CTA */}
               <InvestmentSection deal={deal} />
             </div>
           </div>
+
+          {/* Deal Health Indicators — Issue #1002 */}
+          <DealHealthWidget dealId={deal.id} />
 
           <div className="grid sm:grid-cols-2 gap-5">
             {/* Documents */}
@@ -221,6 +309,11 @@ export default async function DealDetailPage({ params }: { params: { id: string 
 
           {/* Shipment Map — Issue #247 */}
           <ShipmentMap tradeDealId={deal.id} className="w-full" />
+
+          {/* Activity Feed — Issue #863 */}
+          <div className="card p-6">
+            <ActivityFeed tradeDealId={deal.id} />
+          </div>
 
         </div>
       </main>

@@ -1,28 +1,32 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 import { HealthController } from './health.controller';
 import {
   HealthCheckService,
   TypeOrmHealthIndicator,
-  MicroserviceHealthIndicator,
   MemoryHealthIndicator,
   DiskHealthIndicator,
+  HealthCheckError,
 } from '@nestjs/terminus';
-import { ConfigService } from '@nestjs/config';
+import { RabbitmqHealthIndicator } from './rabbitmq.health-indicator';
+import { RedisHealthIndicator } from './redis.health-indicator';
+import { StellarHealthIndicator } from './stellar.health-indicator';
+import { DocumentScanHealthIndicator } from './document-scan.health-indicator';
 
 describe('HealthController', () => {
   let controller: HealthController;
   let health: HealthCheckService;
 
   const mockHealthCheckService = {
-    check: jest.fn((indicators: any[]) =>
+    check: jest.fn((indicators: Array<() => Promise<unknown>>) =>
       Promise.all(indicators.map((indicator) => indicator())),
     ),
   };
   const mockDbIndicator = {
     pingCheck: jest.fn(),
   };
-  const mockMicroserviceIndicator = {
-    pingCheck: jest.fn(),
+  const mockRabbitmqIndicator = {
+    isHealthy: jest.fn(),
   };
   const mockMemoryIndicator = {
     checkHeap: jest.fn(),
@@ -31,23 +35,46 @@ describe('HealthController', () => {
   const mockDiskIndicator = {
     checkStorage: jest.fn(),
   };
-  const mockConfigService = {
-    get: jest.fn().mockReturnValue('amqp://localhost'),
+  const mockRedisIndicator = {
+    isHealthy: jest.fn(),
+  };
+  const mockStellarIndicator = {
+    isHealthy: jest.fn(),
+  };
+  const mockDocumentScanIndicator = {
+    isHealthy: jest.fn(),
   };
 
   beforeEach(async () => {
+    jest.clearAllMocks();
+
     const module: TestingModule = await Test.createTestingModule({
       controllers: [HealthController],
       providers: [
+        // MetricsIpGuard (used by /health/detail) reads its IP allowlist via
+        // ConfigService.
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn(
+              (_key: string, defaultValue?: unknown) => defaultValue,
+            ),
+          },
+        },
         { provide: HealthCheckService, useValue: mockHealthCheckService },
         { provide: TypeOrmHealthIndicator, useValue: mockDbIndicator },
         {
-          provide: MicroserviceHealthIndicator,
-          useValue: mockMicroserviceIndicator,
+          provide: RabbitmqHealthIndicator,
+          useValue: mockRabbitmqIndicator,
+        },
+        { provide: RedisHealthIndicator, useValue: mockRedisIndicator },
+        { provide: StellarHealthIndicator, useValue: mockStellarIndicator },
+        {
+          provide: DocumentScanHealthIndicator,
+          useValue: mockDocumentScanIndicator,
         },
         { provide: MemoryHealthIndicator, useValue: mockMemoryIndicator },
         { provide: DiskHealthIndicator, useValue: mockDiskIndicator },
-        { provide: ConfigService, useValue: mockConfigService },
       ],
     }).compile();
 
@@ -59,16 +86,109 @@ describe('HealthController', () => {
     expect(controller).toBeDefined();
   });
 
-  it('should call health.check with indicators', async () => {
-    await controller.check();
-    expect(health.check).toHaveBeenCalled();
-    expect(mockDbIndicator.pingCheck).toHaveBeenCalledWith('database');
-    expect(mockMicroserviceIndicator.pingCheck).toHaveBeenCalledWith(
-      'rabbitmq',
-      expect.any(Object),
-    );
-    expect(mockMemoryIndicator.checkHeap).toHaveBeenCalled();
-    expect(mockMemoryIndicator.checkRSS).toHaveBeenCalled();
-    expect(mockDiskIndicator.checkStorage).toHaveBeenCalled();
+  describe('check()', () => {
+    it('calls all health indicators when all services are healthy', async () => {
+      mockDbIndicator.pingCheck.mockResolvedValue({
+        database: { status: 'up' },
+      });
+      mockRabbitmqIndicator.isHealthy.mockResolvedValue({
+        rabbitmq: { status: 'up' },
+      });
+      mockMemoryIndicator.checkHeap.mockResolvedValue({
+        memory_heap: { status: 'up' },
+      });
+      mockMemoryIndicator.checkRSS.mockResolvedValue({
+        memory_rss: { status: 'up' },
+      });
+      mockDiskIndicator.checkStorage.mockResolvedValue({
+        disk: { status: 'up' },
+      });
+
+      await controller.check();
+
+      expect(health.check).toHaveBeenCalled();
+      expect(mockDbIndicator.pingCheck).toHaveBeenCalledWith('database');
+      expect(mockRabbitmqIndicator.isHealthy).toHaveBeenCalledWith('rabbitmq');
+      expect(mockMemoryIndicator.checkHeap).toHaveBeenCalled();
+      expect(mockMemoryIndicator.checkRSS).toHaveBeenCalled();
+      expect(mockDiskIndicator.checkStorage).toHaveBeenCalled();
+    });
+
+    it('reports unhealthy status when the RabbitMQ connection drops', async () => {
+      // Simulate all other checks succeeding…
+      mockDbIndicator.pingCheck.mockResolvedValue({
+        database: { status: 'up' },
+      });
+      mockMemoryIndicator.checkHeap.mockResolvedValue({
+        memory_heap: { status: 'up' },
+      });
+      mockMemoryIndicator.checkRSS.mockResolvedValue({
+        memory_rss: { status: 'up' },
+      });
+      mockDiskIndicator.checkStorage.mockResolvedValue({
+        disk: { status: 'up' },
+      });
+
+      // …but RabbitMQ broker is unreachable.
+      const rabbitmqError = new HealthCheckError(
+        'rabbitmq health check failed',
+        { rabbitmq: { status: 'down', message: 'connect ECONNREFUSED' } },
+      );
+      mockRabbitmqIndicator.isHealthy.mockRejectedValue(rabbitmqError);
+
+      // HealthCheckService normally catches the HealthCheckError and returns
+      // HTTP 503. In unit tests we exercise the indicator invocation path
+      // directly via our mock, which re-throws.
+      await expect(controller.check()).rejects.toThrow(HealthCheckError);
+
+      expect(mockRabbitmqIndicator.isHealthy).toHaveBeenCalledWith('rabbitmq');
+    });
+  });
+
+  describe('checkDetail()', () => {
+    it('surfaces ClamAV scan availability in degraded mode', async () => {
+      mockDbIndicator.pingCheck.mockResolvedValue({
+        database: { status: 'up' },
+      });
+      mockRabbitmqIndicator.isHealthy.mockResolvedValue({
+        rabbitmq: { status: 'up' },
+      });
+      mockRedisIndicator.isHealthy.mockResolvedValue({
+        redis: { status: 'up' },
+      });
+      mockStellarIndicator.isHealthy.mockResolvedValue({
+        stellar: { status: 'up' },
+      });
+      mockDocumentScanIndicator.isHealthy.mockResolvedValue({
+        documents: {
+          status: 'up',
+          scan_available: false,
+          scan_enabled: false,
+          mode: 'disabled',
+        },
+      });
+      mockMemoryIndicator.checkHeap.mockResolvedValue({
+        memory_heap: { status: 'up' },
+      });
+      mockMemoryIndicator.checkRSS.mockResolvedValue({
+        memory_rss: { status: 'up' },
+      });
+      mockDiskIndicator.checkStorage.mockResolvedValue({
+        disk: { status: 'up' },
+      });
+
+      const result = await controller.checkDetail();
+
+      expect(mockDocumentScanIndicator.isHealthy).toHaveBeenCalledWith(
+        'documents',
+      );
+      expect(result).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            documents: expect.objectContaining({ scan_available: false }),
+          }),
+        ]),
+      );
+    });
   });
 });

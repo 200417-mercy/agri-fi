@@ -1,10 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import { apiClient } from '@/lib/api';
 import { useToast } from '@/components/ui/ToastProvider';
+import { FormField } from '@/components/ui/FormField';
 
 const DEMOS = [
   { label: '👨‍🌾 Farmer',   email: 'farmer@agri-fi.demo',   color: 'hover:border-emerald-400 hover:bg-emerald-50' },
@@ -15,14 +17,40 @@ const DEMOS = [
 export default function LoginPage() {
   const router = useRouter();
   const { toast } = useToast();
+  const tValidation = useTranslations('common.validation');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string }>({});
+  const [touched, setTouched] = useState({ email: false, password: false });
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const emailRef = useRef<HTMLInputElement>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
+
+  const validateEmail = (value: string) => {
+    if (!value.trim()) return tValidation('emailRequired');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return tValidation('emailInvalid');
+    return undefined;
+  };
+  const validatePassword = (value: string) =>
+    value.trim() ? undefined : tValidation('passwordRequired');
 
   // Redirect already-logged-in users, clear stale data if role is missing
   useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('notice') === 'password-changed') {
+      setNotice('Password changed. Sign in with your new password.');
+    }
+
+    const oauthSuccess = new URLSearchParams(window.location.search).get('oauth') === 'success';
+    if (oauthSuccess) {
+      apiClient.getMe()
+        .then(profile => router.replace(`/dashboard/${profile.role}`))
+        .catch(() => setError('Google sign-in could not be completed. Please try again.'));
+      return;
+    }
+
     const user = apiClient.getCurrentUser();
     if (!user) return;
     if (user.role) {
@@ -35,18 +63,60 @@ export default function LoginPage() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    const errors = { email: validateEmail(email), password: validatePassword(password) };
+    setFieldErrors(errors);
+    setTouched({ email: true, password: true });
+    if (errors.email || errors.password) {
+      (errors.email ? emailRef : passwordRef).current?.focus();
+      return;
+    }
     setLoading(true); setError(null);
     try {
-      await apiClient.login(email, password);
+      const result = await apiClient.login(email, password);
+
+      // #806 — Admin accounts without MFA configured receive a 403 with
+      // code MFA_ENROLLMENT_REQUIRED.  Redirect them to the MFA setup flow
+      // instead of showing a generic error so they can complete enrollment.
+      const body = result as any;
+      if (
+        body?.code === 'MFA_ENROLLMENT_REQUIRED' ||
+        body?.requiresMfaEnrollment === true
+      ) {
+        toast('MFA setup required. Please configure your authenticator app.', 'info');
+        router.push('/settings?tab=security&mfa=enroll');
+        return;
+      }
+
       const profile = await apiClient.getMe();
       toast('Welcome back! 👋', 'success');
       router.push(`/dashboard/${profile.role}`);
     } catch (err: any) {
+      // #806 — The backend throws 403 ForbiddenException for MFA enrollment.
+      // Catch it here so admin users are redirected instead of seeing an error.
+      const code =
+        err?.response?.data?.code ??
+        err?.data?.code ??
+        err?.code ??
+        '';
+      const requiresMfa =
+        err?.response?.data?.requiresMfaEnrollment ??
+        err?.data?.requiresMfaEnrollment ??
+        false;
+
+      if (code === 'MFA_ENROLLMENT_REQUIRED' || requiresMfa) {
+        toast('MFA setup required for your account. Redirecting to security settings…', 'info');
+        router.push('/settings?tab=security&mfa=enroll');
+        return;
+      }
+
       const msg = err?.response?.data?.message ?? err?.message ?? '';
       if (msg.toLowerCase().includes('unavailable') || msg.toLowerCase().includes('unreachable')) {
         setError('Backend is not running. Start the backend server and try again.');
-      } else if (!msg || msg === 'Not Found' || msg === 'Unauthorized') {
-        setError('Invalid email or password.');
+      } else if (!msg || msg === 'Not Found' || msg === 'Unauthorized' || msg.toLowerCase().includes('invalid credential')) {
+        const credentialError = tValidation('credentialsInvalid');
+        setFieldErrors(current => ({ ...current, password: credentialError }));
+        setTouched(current => ({ ...current, password: true }));
+        passwordRef.current?.focus();
       } else {
         setError(msg);
       }
@@ -117,36 +187,65 @@ export default function LoginPage() {
 
             {/* Error */}
             {error && (
-              <div className="alert-error mb-5">
+              <div role="alert" className="alert-error mb-5">
                 <span className="text-base leading-none">⚠</span>
                 <span>{error}</span>
               </div>
             )}
+            {notice && <p role="status" className="mb-5 text-sm text-emerald-700">{notice}</p>}
 
             {/* Form */}
-            <form onSubmit={handleLogin} className="space-y-4">
-              <div>
-                <label className="label">Email address</label>
-                <input className="input" type="email" required autoComplete="email"
-                  placeholder="you@example.com" value={email}
-                  onChange={e => setEmail(e.target.value)} />
-              </div>
+            <form onSubmit={handleLogin} noValidate className="space-y-4">
+              <FormField
+                ref={emailRef}
+                label="Email address"
+                type="email"
+                required
+                autoComplete="email"
+                placeholder="you@example.com"
+                value={email}
+                error={fieldErrors.email}
+                touched={touched.email}
+                success={!fieldErrors.email && !!email.trim()}
+                onBlur={() => {
+                  setTouched(current => ({ ...current, email: true }));
+                  setFieldErrors(current => ({ ...current, email: validateEmail(email) }));
+                }}
+                onChange={e => {
+                  const value = e.target.value;
+                  setEmail(value);
+                  if (touched.email) setFieldErrors(current => ({ ...current, email: validateEmail(value) }));
+                }}
+              />
 
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="label mb-0">Password</label>
-                </div>
-                <div className="relative">
-                  <input className="input pr-11" type={showPw ? 'text' : 'password'}
-                    required autoComplete="current-password"
-                    placeholder="••••••••" value={password}
-                    onChange={e => setPassword(e.target.value)} />
-                  <button type="button" tabIndex={-1}
-                    onClick={() => setShowPw(v => !v)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors text-sm">
-                    {showPw ? '🙈' : '👁'}
-                  </button>
-                </div>
+              <div className="relative">
+                <FormField
+                  ref={passwordRef}
+                  label="Password"
+                  type={showPw ? 'text' : 'password'}
+                  required
+                  autoComplete="current-password"
+                  placeholder="••••••••"
+                  value={password}
+                  className="pr-20"
+                  error={fieldErrors.password}
+                  touched={touched.password}
+                  success={!fieldErrors.password && !!password.trim()}
+                  onBlur={() => {
+                    setTouched(current => ({ ...current, password: true }));
+                    setFieldErrors(current => ({ ...current, password: validatePassword(password) }));
+                  }}
+                  onChange={e => {
+                    const value = e.target.value;
+                    setPassword(value);
+                    if (touched.password) setFieldErrors(current => ({ ...current, password: validatePassword(value) }));
+                  }}
+                />
+                <button type="button" aria-label={showPw ? 'Hide password' : 'Show password'}
+                  onClick={() => setShowPw(v => !v)}
+                  className="absolute right-10 bottom-3 text-slate-400 hover:text-slate-600 transition-colors text-sm">
+                  {showPw ? '🙈' : '👁'}
+                </button>
               </div>
 
               <button type="submit" disabled={loading}
@@ -162,6 +261,19 @@ export default function LoginPage() {
                 ) : 'Sign in →'}
               </button>
             </form>
+
+            <div className="relative my-6">
+              <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-200" /></div>
+              <div className="relative flex justify-center"><span className="bg-white px-3 text-xs text-slate-400">or</span></div>
+            </div>
+
+            <a
+              href="http://localhost:3001/v1/auth/google"
+              className="w-full py-3 border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
+            >
+              <span className="font-bold text-base">G</span>
+              Continue with Google
+            </a>
 
             {/* Demo accounts */}
             <div className="mt-7 pt-6 border-t border-slate-100">

@@ -1,4 +1,28 @@
-const API_BASE = "http://localhost:3001"; // Use relative URLs to hit Next.js API proxy routes
+import { getAuthToken, setAuthToken, clearAuthToken } from "./auth-token";
+import { captureTraceId, traceHeaders } from "./tracing";
+
+export const API_BASE =
+  (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001").replace(/\/+$/, "");
+const API_VERSION = "/v1";
+
+// ── Public (no-auth) fetch helper — used by ActivityFeed and other public endpoints ──
+export async function apiFetchPublic<T>(path: string): Promise<T> {
+  const versionedPath = path.startsWith('/v1') || path.startsWith('/v2')
+    ? path
+    : `${API_VERSION}${path}`;
+  const res = await fetch(`${API_BASE}${versionedPath}`, {
+    headers: traceHeaders({ "Content-Type": "application/json" }),
+    cache: "no-store",
+  });
+  captureTraceId(res);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const err: any = new Error(body?.message ?? res.statusText);
+    err.response = { status: res.status, data: body };
+    throw err;
+  }
+  return res.json();
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -8,8 +32,10 @@ export interface User {
   role: "farmer" | "trader" | "investor" | "company_admin" | "admin";
   name?: string;
   kycStatus?: string;
+  isMfaEnabled?: boolean;
   walletAddress?: string | null;
   isCompany?: boolean;
+  preferredCurrency?: string;
   companyDetails?: {
     companyName?: string;
     registrationNumber?: string;
@@ -45,7 +71,10 @@ export interface Milestone {
 
 export interface Deal {
   id: string;
+  title?: string | null;
   commodity: string;
+  country?: string | null;
+  region?: string | null;
   quantity: number;
   quantity_unit: string;
   total_value: number;
@@ -59,9 +88,50 @@ export interface Deal {
   delivery_date: string;
   annual_roi?: number;
   term_days?: number;
+  expected_roi?: number | null;
+  duration_days?: number | null;
+  min_investment_lot?: number | null;
+  risk_rating?: "Low" | "Medium" | "High" | null;
+  short_description?: string | null;
+  long_description?: string | null;
+  farm_location?: string | null;
+  funding_status?: "open" | "almost funded" | "fully funded";
   created_at: string;
   documents?: Document[];
-  milestones?: Milestone[];
+  cover_image_url?: string | null;
+  esg_score?: number | null;
+  environmental_score?: number | null;
+  social_score?: number | null;
+  governance_score?: number | null;
+  esg_rating?: string | null;
+  esg_status?: string | null;
+  esg_breakdown?: Record<string, any> | null;
+}
+
+export interface CreditScoreDisclosure {
+  score: number;
+  tier: "Excellent" | "Good" | "Fair" | "Poor";
+  maxDealSizeUsdc: number;
+  factors: {
+    onTimeRepaymentRate: number;
+    dealCompletionRate: number;
+    dealDefaultRate: number;
+    shipmentMilestoneComplianceRate: number;
+    kycVerificationAgeDays: number;
+  };
+  breakdown: Record<
+    string,
+    {
+      name: string;
+      weightPercent: string;
+      scorePercent: number;
+      description: string;
+      impact: "positive" | "neutral" | "negative";
+    }
+  >;
+  tips: string[];
+  lastUpdated: string;
+  cached: boolean;
 }
 
 export type TradeDeal = Deal;
@@ -82,6 +152,35 @@ export interface Investment {
   deal: Deal;
   stellar_tx_id?: string | null;
   soroban_contract_id?: string | null;
+}
+
+/** One slice of the allocation-by-deal breakdown (#789). */
+export interface PortfolioAllocationSlice {
+  deal_id: string;
+  title: string;
+  token_symbol: string | null;
+  commodity: string | null;
+  deal_status: string | null;
+  amount_usd: number;
+  share_pct: number;
+  expected_return_usd: number;
+  realized_return_usd: number | null;
+  position_count: number;
+}
+
+export interface PortfolioSummary {
+  investor_id: string;
+  currency: "USD";
+  total_invested: number;
+  current_value: number;
+  expected_returns: number;
+  returns_paid: number;
+  roi_pct: number;
+  active_deal_count: number;
+  invested_deal_count: number;
+  position_count: number;
+  allocation: PortfolioAllocationSlice[];
+  generated_at: string;
 }
 
 interface PaginatedResponse<T> {
@@ -160,7 +259,10 @@ function normalizeInvestment(investment: any): Investment {
 function normalizeDeal(raw: any): Deal {
   return {
     id: raw.id,
+    title: raw.title ?? null,
     commodity: raw.commodity,
+    country: raw.country ?? null,
+    region: raw.region ?? null,
     quantity: Number(raw.quantity ?? 0),
     quantity_unit: raw.quantity_unit ?? raw.quantityUnit ?? "units",
     total_value: Number(raw.total_value ?? raw.totalValue ?? 0),
@@ -175,18 +277,48 @@ function normalizeDeal(raw: any): Deal {
     status: raw.status ?? "draft",
     delivery_date: raw.delivery_date ?? raw.deliveryDate ?? "",
     annual_roi: raw.annual_roi ?? raw.annualRoi ?? 0.15, // Default 15%
-    term_days: raw.term_days ?? raw.termDays ?? 90,     // Default 90 days
+    term_days: raw.term_days ?? raw.termDays ?? 90, // Default 90 days
+    expected_roi: raw.expected_roi ?? raw.expectedRoi ?? null,
+    duration_days: raw.duration_days ?? raw.durationDays ?? null,
+    risk_rating: raw.risk_rating ?? raw.riskRating ?? null,
     created_at: raw.created_at ?? raw.createdAt ?? "",
     documents: raw.documents,
     milestones: raw.milestones,
+    cover_image_url: raw.cover_image_url ?? raw.coverImageUrl ?? null,
+    esg_score:
+      raw.esg_score != null
+        ? Number(raw.esg_score)
+        : raw.esgScore != null
+        ? Number(raw.esgScore)
+        : null,
+    environmental_score:
+      raw.environmental_score != null
+        ? Number(raw.environmental_score)
+        : raw.environmentalScore != null
+        ? Number(raw.environmentalScore)
+        : null,
+    social_score:
+      raw.social_score != null
+        ? Number(raw.social_score)
+        : raw.socialScore != null
+        ? Number(raw.socialScore)
+        : null,
+    governance_score:
+      raw.governance_score != null
+        ? Number(raw.governance_score)
+        : raw.governanceScore != null
+        ? Number(raw.governanceScore)
+        : null,
+    esg_rating: raw.esg_rating ?? raw.esgRating ?? null,
+    esg_status: raw.esg_status ?? raw.esgStatus ?? null,
+    esg_breakdown: raw.esg_breakdown ?? raw.esgBreakdown ?? null,
   };
 }
 
 // ── Auth-aware fetch helper ───────────────────────────────────────────────────
 
 export function getStoredToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("auth_token");
+  return getAuthToken();
 }
 
 function authHeaders(): Record<string, string> {
@@ -195,15 +327,22 @@ function authHeaders(): Record<string, string> {
 }
 
 async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const versionedPath = path.startsWith('/v1') || path.startsWith('/v2')
+    ? path
+    : `${API_VERSION}${path}`;
+  const res = await fetch(`${API_BASE}${versionedPath}`, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
+    credentials: "include",
+    headers: traceHeaders({
+      ...(typeof FormData !== "undefined" && init.body instanceof FormData
+        ? {}
+        : { "Content-Type": "application/json" }),
       ...authHeaders(),
-      ...(init.headers ?? {}),
-    },
+      ...((init.headers as Record<string, string>) ?? {}),
+    }),
     cache: "no-store",
   });
+  captureTraceId(res);
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     const err: any = new Error(body?.message ?? res.statusText);
@@ -213,7 +352,69 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   return res.json();
 }
 
+async function apiBlob(path: string): Promise<Blob> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    credentials: "include",
+    headers: authHeaders(),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body?.message ?? res.statusText);
+  }
+  return res.blob();
+}
+
 // ── Stateful API client (used by dashboard / login pages) ────────────────────
+
+export interface ChatParticipant {
+  userId: string;
+  email?: string;
+  role?: User["role"];
+  lastReadAt?: string | null;
+  self?: boolean;
+}
+
+export interface ChatAttachment {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  downloadUrl: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  senderEmail?: string;
+  content: string;
+  replyToId: string | null;
+  replyTo: { id: string; content: string; senderEmail?: string } | null;
+  reactions: Record<string, string[]>;
+  createdAt: string;
+  readBy: string[];
+  attachments: ChatAttachment[];
+}
+
+export interface ChatConversation {
+  id: string;
+  kind: "direct" | "group";
+  name: string | null;
+  dealId: string | null;
+  createdAt: string;
+  participants: ChatParticipant[];
+  lastMessage?: ChatMessage | null;
+  unreadCount?: number;
+}
+
+export interface ChatAnalytics {
+  periodDays: number;
+  conversationCount: number;
+  sent: number;
+  received: number;
+  dailyActivity: Array<{ day: string; sent: number; received: number }>;
+}
 
 export const apiClient = {
   /** Call POST /auth/login, store the returned JWT, and return the token. */
@@ -225,7 +426,7 @@ export const apiClient = {
         body: JSON.stringify({ email, password }),
       },
     );
-    localStorage.setItem("auth_token", accessToken);
+    setAuthToken(accessToken);
     return accessToken;
   },
 
@@ -237,12 +438,12 @@ export const apiClient = {
   },
 
   setAuth(token: string, user: User) {
-    localStorage.setItem("auth_token", token);
+    setAuthToken(token);
     localStorage.setItem("auth_user", JSON.stringify(user));
   },
 
   clearAuth() {
-    localStorage.removeItem("auth_token");
+    clearAuthToken();
     localStorage.removeItem("auth_user");
   },
 
@@ -279,7 +480,7 @@ export const apiClient = {
   async createDeal(data: {
     commodity: string;
     quantity: number;
-    quantity_unit: 'kg' | 'tons';
+    quantity_unit: "kg" | "tons";
     total_value: number;
     delivery_date: string;
   }): Promise<Deal> {
@@ -295,12 +496,25 @@ export const apiClient = {
     return apiFetch<Deal[]>("/users/me/deals?role=trader");
   },
 
+  // PATCH /investments/:id/cancel
+  async cancelInvestment(investmentId: string, reason?: string): Promise<Investment> {
+    return apiFetch<Investment>(`/investments/${investmentId}/cancel`, {
+      method: "PATCH",
+      body: JSON.stringify(reason ? { reason } : {}),
+    });
+  },
+
   // GET /investments/my-investments
   async getInvestorInvestments(): Promise<Investment[]> {
     const response = await apiFetch<Investment[] | PaginatedResponse<any>>(
       "/investments/my-investments",
     );
     return unwrapPaginated(response).map(normalizeInvestment);
+  },
+
+  // GET /investments/summary — portfolio totals and per-deal allocation (#789)
+  async getPortfolioSummary(): Promise<PortfolioSummary> {
+    return apiFetch<PortfolioSummary>("/investments/summary");
   },
 
   // POST /shipments/milestones  — trade_deal_id + milestone + notes in body
@@ -319,8 +533,14 @@ export const apiClient = {
 
   // POST /auth/kyc
   async submitKyc(data: {
+    fullName?: string;
+    dateOfBirth?: string;
+    nationality?: string;
+    address?: string;
     governmentIdUrl?: string;
+    identityDocumentBackUrl?: string;
     proofOfAddressUrl?: string;
+    selfieUrl?: string;
     isCorporate?: boolean;
     companyName?: string;
     registrationNumber?: string;
@@ -344,7 +564,137 @@ export const apiClient = {
       this.clearAuth();
     }
   },
+
+  // GET /users/me/credit-score — Farmer Credit Score Disclosure (#1016)
+  async getCreditScore(): Promise<CreditScoreDisclosure> {
+    return apiFetch("/users/me/credit-score");
+  },
+
+  // POST /trade-deals/:id/esg-questionnaire — ESG impact scoring (#1012)
+  async submitEsgQuestionnaire(dealId: string, data: any): Promise<Deal> {
+    return apiFetch(`/trade-deals/${dealId}/esg-questionnaire`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  },
+
+  // GET /trade-deals/:id/esg-score
+  async getDealEsgScore(dealId: string): Promise<any> {
+    return apiFetch(`/trade-deals/${dealId}/esg-score`);
+  },
+
+  getChatConversations(): Promise<ChatConversation[]> {
+    return apiFetch("/chat/conversations");
+  },
+
+  createChatConversation(input: {
+    participantIds: string[];
+    name?: string;
+    dealId?: string;
+  }): Promise<ChatConversation> {
+    return apiFetch("/chat/conversations", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  },
+
+  searchChatContacts(query: string): Promise<Array<Pick<User, "id" | "email" | "role">>> {
+    return apiFetch(`/chat/contacts?q=${encodeURIComponent(query)}`);
+  },
+
+  getChatMessages(conversationId: string): Promise<ChatMessage[]> {
+    return apiFetch(`/chat/conversations/${encodeURIComponent(conversationId)}/messages`);
+  },
+
+  searchChatMessages(conversationId: string, query: string): Promise<ChatMessage[]> {
+    return apiFetch(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/search?q=${encodeURIComponent(query)}`,
+    );
+  },
+
+  sendChatMessage(
+    conversationId: string,
+    content: string,
+    replyToId?: string,
+  ): Promise<ChatMessage> {
+    return apiFetch(`/chat/conversations/${encodeURIComponent(conversationId)}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content, replyToId }),
+    });
+  },
+
+  markChatRead(conversationId: string): Promise<{ lastReadAt: string }> {
+    return apiFetch(`/chat/conversations/${encodeURIComponent(conversationId)}/read`, {
+      method: "POST",
+      body: "{}",
+    });
+  },
+
+  reactToChatMessage(messageId: string, emoji: string): Promise<ChatMessage> {
+    return apiFetch(`/chat/messages/${encodeURIComponent(messageId)}/reactions`, {
+      method: "POST",
+      body: JSON.stringify({ emoji }),
+    });
+  },
+
+  uploadChatAttachment(conversationId: string, file: File): Promise<ChatMessage> {
+    const form = new FormData();
+    form.append("file", file);
+    return apiFetch(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/attachments`,
+      { method: "POST", body: form },
+    );
+  },
+
+  downloadChatAttachment(downloadUrl: string): Promise<Blob> {
+    return apiBlob(downloadUrl);
+  },
+
+  getChatAnalytics(): Promise<ChatAnalytics> {
+    return apiFetch("/chat/analytics");
+  },
+
+  // POST /auth/behavioral/risk — submit only the computed risk score and
+  // anomaly flags. Raw behavioral data (keystroke/mouse/usage samples) never
+  // leaves the device; only derived, non-reversible signals are sent.
+  async submitBehavioralRisk(payload: {
+    riskScore: number;
+    anomalyFlags: string[];
+    confidence?: number;
+    sampledAt?: string;
+  }): Promise<{ riskScore: number; action: "allow" | "challenge" | "block" }> {
+    return apiFetch("/auth/behavioral/risk", {
+      method: "POST",
+      body: JSON.stringify({
+        riskScore: payload.riskScore,
+        anomalyFlags: payload.anomalyFlags,
+        confidence: payload.confidence,
+        sampledAt: payload.sampledAt ?? new Date().toISOString(),
+      }),
+    });
+  },
+
+  // GET /auth/behavioral/analytics — behavioral authentication accuracy and
+  // false-positive metrics for the current user.
+  async getBehavioralAnalytics(): Promise<BehavioralAnalytics> {
+    return apiFetch("/auth/behavioral/analytics");
+  },
 };
+
+export interface BehavioralAnalytics {
+  periodDays: number;
+  totalSamples: number;
+  truePositives: number;
+  falsePositives: number;
+  trueNegatives: number;
+  falseNegatives: number;
+  accuracy: number;
+  falsePositiveRate: number;
+  averageRiskScore: number;
+  anomalyCount: number;
+  challengesIssued: number;
+  lastUpdated: string;
+}
 
 // ── Public marketplace helpers ────────────────────────────────────────────────
 
@@ -355,10 +705,25 @@ export interface PaginatedDeals {
   limit: number;
 }
 
-export async function getOpenDeals(page = 1, limit = 12): Promise<PaginatedDeals> {
-  const raw = await apiFetch<{ data: any[]; total: number; page: number; limit: number }>(
-    `/trade-deals?page=${page}&limit=${limit}`,
-  );
+export async function getOpenDeals(
+  page = 1,
+  limit = 12,
+  sortBy?: string,
+  sortOrder?: "ASC" | "DESC",
+): Promise<PaginatedDeals> {
+  let url = `/trade-deals?page=${page}&limit=${limit}`;
+  if (sortBy) {
+    url += `&sortBy=${sortBy}`;
+  }
+  if (sortOrder) {
+    url += `&sortOrder=${sortOrder}`;
+  }
+  const raw = await apiFetch<{
+    data: any[];
+    total: number;
+    page: number;
+    limit: number;
+  }>(url);
   return {
     data: raw.data.map(normalizeDeal),
     total: raw.total,

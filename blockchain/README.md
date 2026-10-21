@@ -80,6 +80,10 @@ blockchain/
         └── release/             # WASM binaries
 ```
 
+## Ethereum contracts
+
+Issue #1179 adds an independent Hardhat workspace under [`ethereum/`](ethereum/README.md). It provides an OpenZeppelin UUPS upgradeable escrow implementation configurable for simple, milestone, and arbitrated-dispute deals. The Ethereum workspace is separate from the Soroban Cargo workspace and has its own dependencies and deployment configuration.
+
 ## Building
 
 ### Build All Contracts
@@ -154,8 +158,9 @@ docker-compose up -d soroban soroban-rpc
 
 ## Documentation
 
-- [SOROBAN_DEVELOPMENT.md](SOROBAN_DEVELOPMENT.md) - Comprehensive guide
-- [contracts/escrow/ESCROW_CONTRACT.md](contracts/escrow/ESCROW_CONTRACT.md) - Escrow contract
+- [Extending Soroban Contracts & Redeployment Guide](../docs/blockchain/extending-contracts.md) - Workspace layout, storage best practices, upgrade flow, and backend event integration
+- [SOROBAN_DEVELOPMENT.md](SOROBAN_DEVELOPMENT.md) - Comprehensive development guide, including contract upgrade & migration strategy
+- [contracts/escrow/ESCROW_CONTRACT.md](contracts/escrow/ESCROW_CONTRACT.md) - Escrow contract documentation
 
 ## Issues Addressed
 

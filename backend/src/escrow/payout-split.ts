@@ -1,49 +1,73 @@
 /**
- * Payout split helpers for escrow release (Issue #955).
+ * #891 — Deal co-investment payout splitting.
  *
- * Delegates to the shared `splitRatio` utility so there is a single source
- * of truth for floor+remainder dust semantics across the backend.
- */
-import { splitRatio } from '../common/money';
-
-export const FARMER_RATIO = 0.98;
-export const PLATFORM_RATIO = 0.02;
-
-/**
- * Splits a total USD value into [farmerAmount, platformAmount].
- * Uses floor arithmetic with remainder going to the farmer.
+ * A deal's delivery payment is split between the lead farmer and any accepted
+ * co-farmers according to each co-farmer's committed `portionPercent`. The
+ * lead farmer receives whatever remains of the pool (100% minus the sum of
+ * committed co-farmer portions).
  *
- * @param totalUsd  Deal total value in USD
- * @returns         [farmerAmount, platformAmount] in USD
+ * Kept dependency-free and pure so the arithmetic can be exhaustively unit
+ * tested (`payout-split.spec.ts`) without any NestJS/DI machinery.
  */
-export function splitPayoutUsd(totalUsd: number): [number, number] {
-  // Work in cents to avoid floating-point issues
-  const totalCents = Math.round(totalUsd * 100);
-  const [farmerCents, platformCents] = splitRatio(totalCents, [
-    FARMER_RATIO,
-    PLATFORM_RATIO,
-  ]);
-  return [farmerCents / 100, platformCents / 100];
+
+/** One payout recipient with the weight (portion %) they are entitled to. */
+export interface PayoutParticipant {
+  farmerId: string;
+  walletAddress: string | null;
+  /** Entitlement weight in percent. Co-farmers commit an explicit portion; */
+  /** the lead farmer's weight is derived as 100 − Σ(co-farmer portions).   */
+  portionPercent: number;
+}
+
+export interface FarmerPayout {
+  recipientId: string;
+  walletAddress: string | null;
+  amountUsd: number;
 }
 
 /**
- * Proportionally distributes `investorPoolUsd` across investors according to
- * their token weights. Uses floor+remainder so the sum always equals the pool.
+ * Splits `netPoolUsd` across participants proportionally to their weights.
  *
- * @param investorPoolUsd  Total USD to distribute to investors
- * @param tokenWeights     Each investor's token count
- * @returns                USD amount per investor (same order as tokenWeights)
+ * - Works entirely in integer cents to avoid floating-point drift.
+ * - Every participant except the last receives floor(pool × weight / totalWeight);
+ *   the last participant absorbs the rounding remainder so the split always
+ *   sums exactly to the pool.
+ * - Zero-weight recipients produce zero-cent allocations which are dropped
+ *   from the result (no junk rows persisted).
  */
-export function allocateInvestorPayouts(
-  investorPoolUsd: number,
-  tokenWeights: number[],
-): number[] {
-  if (tokenWeights.length === 0) return [];
+export function computeFarmerPayoutSplits(
+  netPoolUsd: number,
+  participants: PayoutParticipant[],
+): FarmerPayout[] {
+  if (participants.length === 0) return [];
 
-  const totalWeight = tokenWeights.reduce((a, b) => a + b, 0);
-  if (totalWeight <= 0) throw new Error('allocateInvestorPayouts: total weight must be positive');
+  const totalWeight = participants.reduce(
+    (sum, p) => sum + Math.max(p.portionPercent, 0),
+    0,
+  );
+  if (totalWeight <= 0) {
+    throw new Error('Cannot split payout without positive weights.');
+  }
 
-  const poolCents = Math.round(investorPoolUsd * 100);
-  const ratios = tokenWeights.map((w) => w / totalWeight);
-  return splitRatio(poolCents, ratios).map((cents) => cents / 100);
+  const totalCents = Math.round((netPoolUsd + Number.EPSILON) * 100);
+  let allocatedCents = 0;
+
+  const rows: FarmerPayout[] = participants.map((participant, index) => {
+    let cents: number;
+    if (index === participants.length - 1) {
+      cents = totalCents - allocatedCents;
+    } else {
+      const weight = Math.max(participant.portionPercent, 0);
+      cents = Math.floor((totalCents * weight) / totalWeight);
+      allocatedCents += cents;
+    }
+
+    return {
+      recipientId: participant.farmerId,
+      walletAddress: participant.walletAddress,
+      amountUsd: cents / 100,
+    };
+  });
+
+  return rows.filter((row) => row.amountUsd > 0);
 }

@@ -23,7 +23,7 @@ const mockMilestones = [
 
 // Mock localStorage
 const mockLocalStorage = {
-  getItem: jest.fn(() => 'mock-auth-token'),
+  getItem: vi.fn(() => 'mock-auth-token'),
 };
 Object.defineProperty(window, 'localStorage', {
   value: mockLocalStorage,
@@ -105,13 +105,15 @@ describe('ShipmentTimeline', () => {
   });
 
   it('handles authentication error', async () => {
-    mockLocalStorage.getItem.mockReturnValueOnce(null);
+    // No token under the canonical or any legacy key (see lib/auth-token).
+    mockLocalStorage.getItem.mockReturnValue(null);
 
     render(<ShipmentTimeline tradeDealId="deal-123" />);
 
     await waitFor(() => {
       expect(screen.getByText(/Authentication required/)).toBeInTheDocument();
     });
+    mockLocalStorage.getItem.mockReturnValue('mock-auth-token');
   });
 
   it('renders empty state when no milestones exist', async () => {

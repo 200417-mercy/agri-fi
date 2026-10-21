@@ -1,6 +1,9 @@
 'use client';
 
+import { getAuthToken } from '@/lib/auth-token';
 import { useEffect, useState } from 'react';
+import { useCurrencyFormat } from '../hooks/useCurrencyFormat';
+import { useNumberFormat } from '../hooks/useNumberFormat';
 
 interface Offer {
   offerId: string;
@@ -26,6 +29,8 @@ export const OrderBook: React.FC<OrderBookProps> = ({
   tradeTokenCode,
   tradeTokenIssuer,
 }) => {
+  const { formatCurrency } = useCurrencyFormat();
+  const { formatNumber } = useNumberFormat();
   const [offers, setOffers] = useState<Offer[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,7 +39,7 @@ export const OrderBook: React.FC<OrderBookProps> = ({
   useEffect(() => {
     // Resolve auth state client-side (localStorage is not available during SSR).
     const token =
-      typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
+      getAuthToken();
 
     setIsAuthenticated(!!token);
 
@@ -75,6 +80,7 @@ export const OrderBook: React.FC<OrderBookProps> = ({
       <section
         className="bg-white rounded-2xl shadow-sm border border-green-100 p-6"
         data-testid="order-book-login-prompt"
+        dir="auto"
       >
         <h2 className="text-lg font-semibold text-gray-800 mb-1">
           Secondary Market — Active Buy Orders
@@ -117,6 +123,7 @@ export const OrderBook: React.FC<OrderBookProps> = ({
     <section
       className="bg-white rounded-2xl shadow-sm border border-green-100 p-6"
       data-testid="order-book"
+      dir="auto"
     >
       <h2 className="text-lg font-semibold text-gray-800 mb-1">
         Secondary Market — Active Buy Orders
@@ -154,17 +161,15 @@ export const OrderBook: React.FC<OrderBookProps> = ({
             </thead>
             <tbody className="divide-y divide-gray-50">
               {offers.map((offer) => {
-                const total = (
-                  parseFloat(offer.amount) * parseFloat(offer.price)
-                ).toFixed(2);
+                const totalNum = parseFloat(offer.amount) * parseFloat(offer.price);
                 return (
                   <tr key={offer.offerId} className="hover:bg-gray-50">
                     <td className="py-2 pr-4 font-mono text-xs text-gray-600">
                       {truncate(offer.buyer)}
                     </td>
-                    <td className="py-2 pr-4 text-gray-800">{offer.amount}</td>
-                    <td className="py-2 pr-4 text-gray-800">{offer.price}</td>
-                    <td className="py-2 text-gray-800">{total}</td>
+                    <td className="py-2 pr-4 text-gray-800">{formatNumber(offer.amount)}</td>
+                    <td className="py-2 pr-4 text-gray-800">{formatCurrency(offer.price, 'USDC', { decimalPlaces: 7 })}</td>
+                    <td className="py-2 text-gray-800">{formatCurrency(totalNum, 'USDC')}</td>
                   </tr>
                 );
               })}

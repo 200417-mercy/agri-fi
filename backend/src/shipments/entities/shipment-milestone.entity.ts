@@ -3,6 +3,7 @@ import {
   PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
+  DeleteDateColumn,
 } from 'typeorm';
 
 export type MilestoneType = 'farm' | 'warehouse' | 'port' | 'importer';
@@ -36,6 +37,16 @@ export class ShipmentMilestone {
   @Column({ type: 'double precision', nullable: true })
   longitude: number | null;
 
+  /**
+   * Array of document UUIDs referencing POE-anchored evidence photos.
+   * Populated when the trader uploads photos during milestone recording (#996).
+   */
+  @Column({ type: 'jsonb', nullable: true, name: 'evidence_document_ids', default: null })
+  evidenceDocumentIds: string[] | null;
+
   @CreateDateColumn({ name: 'recorded_at' })
   recordedAt: Date;
+
+  @DeleteDateColumn({ name: 'deleted_at', nullable: true })
+  deletedAt: Date | null;
 }

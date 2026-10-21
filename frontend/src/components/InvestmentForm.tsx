@@ -1,17 +1,31 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useWallet } from '../hooks/useWallet';
+import { useState, useEffect, useRef } from 'react';
+import { useWallet, WalletProvider } from '../hooks/useWallet';
+import { useTransactionProgress } from '../hooks/useTransactionProgress';
 import { getStoredToken } from '../lib/api';
 import { useToast } from './ui/ToastProvider';
+import { OnChainProgressIndicator } from './OnChainProgressIndicator';
+import { useCurrencyFormat } from '../hooks/useCurrencyFormat';
+import { useNumberFormat } from '../hooks/useNumberFormat';
+import { useTranslations } from 'next-intl';
+import { FormField } from './ui/FormField';
+import { WalletSelectionModal } from './wallet/WalletSelectionModal';
+import TxReceiptModal from './wallet/TxReceiptModal';
 
 interface InvestmentFormProps {
   dealId: string;
   maxTokens: number;
   tokenPrice: number;
+  /** Minimum investment lot size in USD (#835) */
+  minLotSize?: number;
+  /** Lot increment above the minimum in USD (#835) */
+  lotStep?: number;
   onSuccess?: (investment: any) => void;
   onError?: (error: string) => void;
   onQuantityChange?: (quantity: number) => void;
+  /** Reports whether a transaction is in flight so a parent modal can block dismissal. */
+  onBusyChange?: (busy: boolean) => void;
 }
 
 interface InvestmentResponse {
@@ -35,17 +49,75 @@ export const InvestmentForm: React.FC<InvestmentFormProps> = ({
   dealId,
   maxTokens,
   tokenPrice = 100,
+  minLotSize,
+  lotStep,
   onSuccess,
   onError,
   onQuantityChange,
+  onBusyChange,
 }) => {
   const { toast, promise } = useToast();
-  const { isConnected, publicKey, signTransaction } = useWallet();
+  const {
+    isConnected,
+    publicKey,
+    signTransaction,
+    connect,
+    availableWallets,
+    configuredNetwork,
+    detectedNetwork,
+  } = useWallet();
+  const txProgress = useTransactionProgress();
+  const { formatCurrency } = useCurrencyFormat();
+  const { formatNumber } = useNumberFormat();
+  const tValidation = useTranslations('common.validation');
   const [tokenQuantity, setTokenQuantity] = useState<number | ''>(1);
+  const [quantityTouched, setQuantityTouched] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<SuccessState | null>(null);
   const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
+  const [showProgress, setShowProgress] = useState(false);
+  const [showWalletModal, setShowWalletModal] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const [showReceipt, setShowReceipt] = useState(false);
+  const stepHeadingRef = useRef<HTMLHeadingElement>(null);
+  const quantityInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    onBusyChange?.(isSubmitting);
+  }, [isSubmitting, onBusyChange]);
+
+  const view: 'connect' | 'progress' | 'success' | 'form' = !isConnected
+    ? 'connect'
+    : showProgress && txProgress.state !== 'confirmed'
+      ? 'progress'
+      : success
+        ? 'success'
+        : 'form';
+
+  // Keyboard/screen-reader users lose their place when the submit button
+  // unmounts, so move focus to the heading of each new step.
+  const previousView = useRef(view);
+  useEffect(() => {
+    if (previousView.current !== view && (view === 'progress' || view === 'success')) {
+      stepHeadingRef.current?.focus();
+    }
+    previousView.current = view;
+  }, [view]);
+
+  const handleConnectWallet = async (provider: WalletProvider) => {
+    setConnectError(null);
+    setIsConnecting(true);
+    try {
+      await connect(provider);
+      setShowWalletModal(false);
+    } catch (err) {
+      setConnectError(err instanceof Error ? err.message : 'Failed to connect wallet');
+    } finally {
+      setIsConnecting(false);
+    }
+  };
 
   // Cleanup polling interval on unmount
   useEffect(() => {
@@ -59,22 +131,49 @@ export const InvestmentForm: React.FC<InvestmentFormProps> = ({
   const safeQuantity = tokenQuantity === '' ? 0 : tokenQuantity;
   const totalAmount = safeQuantity * tokenPrice;
 
+  // #835 — lot sizing (defaults keep legacy single-token behaviour)
+  const lotSizeUsd = lotStep && lotStep > 0 ? lotStep : tokenPrice;
+  const tokensPerLot = Math.max(1, Math.round(lotSizeUsd / tokenPrice));
+  const minTokens =
+    minLotSize && minLotSize > 0
+      ? Math.max(1, Math.ceil(minLotSize / tokenPrice))
+      : 1;
+  const quantityError = safeQuantity < minTokens
+    ? tValidation('quantityMin', { min: minTokens })
+    : safeQuantity > maxTokens
+      ? tValidation('quantityMax', { max: maxTokens })
+      : undefined;
+  const availableLots = Math.floor((maxTokens * tokenPrice) / lotSizeUsd);
+
+  const adjustLot = (direction: 1 | -1) => {
+    setTokenQuantity((prev) => {
+      const current = prev === '' ? 0 : prev;
+      const next = current + direction * tokensPerLot;
+      return Math.min(maxTokens, Math.max(0, next));
+    });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
+    if (isSubmitting) return;
+
     if (!isConnected || !publicKey) {
       toast('Please connect your wallet first', 'warning');
       return;
     }
 
-    if (safeQuantity < 1 || safeQuantity > maxTokens) {
-      toast(`Token quantity must be between 1 and ${maxTokens}`, 'warning');
+    if (quantityError) {
+      setQuantityTouched(true);
+      quantityInputRef.current?.focus();
       return;
     }
 
     setIsSubmitting(true);
     setError(null);
     setSuccess(null);
+    setShowProgress(true);
+    txProgress.setSimulating();
 
     const investmentFlow = async () => {
       const token = getStoredToken();
@@ -82,12 +181,14 @@ export const InvestmentForm: React.FC<InvestmentFormProps> = ({
         throw new Error('Please log in first');
       }
 
-      // Step 1: Create pending investment
+      // Step 1: Create pending investment (simulating phase)
+      const idempotencyKey = crypto.randomUUID();
       const createResponse = await fetch('/api/investments', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
+          'X-Idempotency-Key': idempotencyKey,
         },
         body: JSON.stringify({
           tradeDealId: dealId,
@@ -103,10 +204,11 @@ export const InvestmentForm: React.FC<InvestmentFormProps> = ({
 
       const investmentData: InvestmentResponse = await createResponse.json();
 
-      // Step 2: Sign transaction
+      // Step 2: Sign transaction (simulating → submitting)
+      txProgress.setSubmitting();
       const signedXdr = await signTransaction(investmentData.unsignedXdr);
 
-      // Step 3: Submit signed transaction to backend
+      // Step 3: Submit signed transaction to backend (submitting phase)
       const submitResponse = await fetch(`/api/investments/${investmentData.investment.id}/fund`, {
         method: 'POST',
         headers: {
@@ -134,6 +236,11 @@ export const InvestmentForm: React.FC<InvestmentFormProps> = ({
         error: 'Investment failed. Please try again.',
       });
       
+      // Mark as confirmed once we get the result
+      if (finalResult.stellarTxId) {
+        txProgress.setConfirmed(finalResult.stellarTxId);
+      }
+      
       if (finalResult.status === 'queued') {
         setSuccess({
           investmentAmount: totalAmount,
@@ -158,6 +265,8 @@ export const InvestmentForm: React.FC<InvestmentFormProps> = ({
       const errorMessage = error instanceof Error ? error.message : 'Investment failed';
       setError(errorMessage);
       onError?.(errorMessage);
+      setShowProgress(false);
+      txProgress.reset();
     } finally {
       setIsSubmitting(false);
     }
@@ -208,122 +317,254 @@ export const InvestmentForm: React.FC<InvestmentFormProps> = ({
     setPollingInterval(interval);
   };
 
-  if (!isConnected) {
-    return (
-      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+  const stepAnnouncement =
+    view === 'progress'
+      ? txProgress.state === 'simulating'
+        ? 'Step 1 of 3: preparing your investment.'
+        : 'Step 2 of 3: approve the transaction in your wallet. It will be submitted to the Stellar network once signed.'
+      : view === 'success' && success
+        ? success.isQueued
+          ? 'Step 3 of 3: investment submitted and queued for confirmation.'
+          : 'Step 3 of 3: investment confirmed on the Stellar network.'
+        : '';
+
+  let body: React.ReactNode;
+
+  if (view === 'connect') {
+    body = (
+      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 space-y-3">
         <p className="text-yellow-800 text-sm">
           Please connect your Stellar wallet to invest in this deal.
         </p>
-      </div>
-    );
-  }
-
-  if (success) {
-    return (
-      <div className={`${success.isQueued ? 'bg-blue-50 border-blue-200' : 'bg-green-50 border-green-200'} border rounded-lg p-6`}>
-        <div className="flex items-center mb-4">
-          <div className={`w-8 h-8 ${success.isQueued ? 'bg-blue-500' : 'bg-green-500'} rounded-full flex items-center justify-center mr-3`}>
-            {success.isQueued ? (
-              <svg className="w-5 h-5 text-white animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-              </svg>
-            ) : (
-              <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-              </svg>
-            )}
-          </div>
-          <h3 className={`text-lg font-semibold ${success.isQueued ? 'text-blue-800' : 'text-green-800'}`}>
-            {success.isQueued ? 'Investment Processing...' : 'Investment Successful!'}
-          </h3>
-        </div>
-        
-        <div className={`space-y-2 text-sm ${success.isQueued ? 'text-blue-700' : 'text-green-700'}`}>
-          <p><strong>Investment Amount:</strong> ${success.investmentAmount.toLocaleString()}</p>
-          <p><strong>Tokens Purchased:</strong> {success.tokenCount}</p>
-          {success.transactionId && (
-            <p><strong>{success.isQueued ? 'Status:' : 'Transaction ID:'}</strong> 
-              <span className="font-mono text-xs break-all ml-1">
-                {success.transactionId}
-              </span>
-            </p>
-          )}
-          {success.isQueued && (
-            <p className="text-xs italic">
-              Your investment is being processed. This page will update automatically when complete.
-            </p>
-          )}
-        </div>
-        
         <button
-          onClick={() => setSuccess(null)}
-          className={`mt-4 text-sm ${success.isQueued ? 'text-blue-600 hover:text-blue-800' : 'text-green-600 hover:text-green-800'} underline`}
+          type="button"
+          data-autofocus
+          onClick={() => setShowWalletModal(true)}
+          className="focus-ring w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md font-medium transition-colors"
         >
-          Make Another Investment
+          Connect wallet
         </button>
       </div>
     );
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div>
-        <label htmlFor="tokenQuantity" className="block text-sm font-medium text-gray-700 mb-2">
-          Number of Tokens
-        </label>
-        <input
-          type="number"
-          id="tokenQuantity"
-          min="1"
-          max={maxTokens}
-          value={tokenQuantity === '' ? '' : tokenQuantity}
-          onChange={(e) => {
-            const val = parseInt(e.target.value, 10);
-            const qty = isNaN(val) ? 0 : val;
-            setTokenQuantity(isNaN(val) ? '' : val);
-            onQuantityChange?.(qty);
-          }}
-          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          disabled={isSubmitting}
+  } else if (view === 'progress') {
+    // Show progress indicator while transaction is in-flight
+    body = (
+      <div className="space-y-4">
+        <h3
+          ref={stepHeadingRef}
+          tabIndex={-1}
+          className="text-base font-semibold text-slate-900 outline-none"
+        >
+          {txProgress.state === 'simulating' ? 'Preparing investment…' : 'Waiting for wallet signature…'}
+        </h3>
+        <OnChainProgressIndicator
+          state={txProgress.state}
+          txHash={txProgress.txHash ?? undefined}
         />
-        <p className="text-xs text-gray-500 mt-1">
-          Maximum available: {maxTokens} tokens
+        <p className="text-sm text-slate-600 text-center">
+          Please wait while your investment is being processed on the Stellar network.
         </p>
+      </div>
+    );
+  } else if (view === 'success' && success) {
+    const confirmedHash =
+      success.transactionId !== 'Processing... (queued)'
+        ? success.transactionId
+        : txProgress.txHash ?? undefined;
+    body = (
+      <div className="space-y-4" data-testid="investment-receipt">
+        {/* Show the progress indicator in confirmed state */}
+        {txProgress.state === 'confirmed' && (
+          <OnChainProgressIndicator
+            state="confirmed"
+            txHash={confirmedHash}
+          />
+        )}
+        
+        <div className={`${success.isQueued ? 'bg-blue-50 border-blue-200' : 'bg-green-50 border-green-200'} border rounded-lg p-6`}>
+          <div className="flex items-center mb-4">
+            <div className={`w-8 h-8 ${success.isQueued ? 'bg-blue-500' : 'bg-green-500'} rounded-full flex items-center justify-center mr-3`} aria-hidden="true">
+              {success.isQueued ? (
+                <svg className="w-5 h-5 text-white animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+              ) : (
+                <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                </svg>
+              )}
+            </div>
+            <h3
+              ref={stepHeadingRef}
+              tabIndex={-1}
+              className={`text-lg font-semibold outline-none ${success.isQueued ? 'text-blue-800' : 'text-green-800'}`}
+            >
+              {success.isQueued ? 'Investment Processing...' : 'Investment Successful!'}
+            </h3>
+          </div>
+          
+          <div className={`space-y-2 text-sm ${success.isQueued ? 'text-blue-700' : 'text-green-700'}`}>
+            <p><strong>Investment Amount:</strong> {formatCurrency(success.investmentAmount, 'USD')}</p>
+            <p><strong>Tokens Purchased:</strong> {formatNumber(success.tokenCount)}</p>
+            {success.transactionId && success.transactionId !== 'Processing... (queued)' && (
+              <p><strong>{success.isQueued ? 'Status:' : 'Transaction ID:'}</strong> 
+                <span className="font-mono text-xs break-all ml-1">
+                  {success.transactionId}
+                </span>
+              </p>
+            )}
+            {success.isQueued && (
+              <p className="text-xs italic">
+                Your investment is being processed. This page will update automatically when complete.
+              </p>
+            )}
+          </div>
+          
+          <div className="mt-4 flex flex-wrap items-center gap-4">
+            {!success.isQueued && confirmedHash && (
+              <button
+                type="button"
+                onClick={() => setShowReceipt(true)}
+                className="focus-ring text-sm font-medium text-green-800 underline rounded"
+              >
+                View receipt
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setSuccess(null);
+                setShowProgress(false);
+                txProgress.reset();
+              }}
+              className={`focus-ring text-sm ${success.isQueued ? 'text-blue-700 hover:text-blue-800' : 'text-green-700 hover:text-green-800'} underline rounded`}
+            >
+              Make Another Investment
+            </button>
+          </div>
+        </div>
+
+        {showReceipt && confirmedHash && (
+          <TxReceiptModal
+            transaction={{ hash: confirmedHash, createdAt: new Date() }}
+            onClose={() => setShowReceipt(false)}
+          />
+        )}
+      </div>
+    );
+  } else {
+    body = (
+    <form onSubmit={handleSubmit} noValidate className="space-y-4">
+      <div>
+        <div className="flex items-center space-x-2">
+          <button
+            type="button"
+            aria-label="Decrease lot size"
+            onClick={() => adjustLot(-1)}
+            disabled={isSubmitting || safeQuantity <= minTokens}
+            className="focus-ring w-10 h-10 flex items-center justify-center border border-gray-300 rounded-md text-lg font-semibold hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            &minus;
+          </button>
+          <FormField
+            ref={quantityInputRef}
+            label="Number of Tokens"
+            hideLabel
+            type="number"
+            id="tokenQuantity"
+            data-autofocus
+            required
+            min={minTokens}
+            step={tokensPerLot}
+            max={maxTokens}
+            value={tokenQuantity === '' ? '' : tokenQuantity}
+            error={quantityTouched ? quantityError : undefined}
+            touched={quantityTouched}
+            success={!quantityError && safeQuantity > 0}
+            hint={`Maximum available: ${formatNumber(maxTokens)} tokens`}
+            onChange={(e) => {
+              const val = parseInt(e.target.value, 10);
+              const qty = isNaN(val) ? 0 : val;
+              setTokenQuantity(isNaN(val) ? '' : val);
+              onQuantityChange?.(qty);
+            }}
+            onBlur={() => setQuantityTouched(true)}
+            className="text-center"
+            disabled={isSubmitting}
+          />
+          <button
+            type="button"
+            aria-label="Increase lot size"
+            onClick={() => adjustLot(1)}
+            disabled={isSubmitting || safeQuantity + tokensPerLot > maxTokens}
+            className="focus-ring w-10 h-10 flex items-center justify-center border border-gray-300 rounded-md text-lg font-semibold hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            +
+          </button>
+        </div>
       </div>
 
       <div className="bg-gray-50 p-3 rounded-md">
         <div className="flex justify-between text-sm">
-          <span>Token Price:</span>
-          <span>${tokenPrice}</span>
+          <span>Price per lot:</span>
+          <span>{formatCurrency(lotSizeUsd, 'USD')}</span>
+        </div>
+        <div className="flex justify-between text-sm">
+          <span>Available lots remaining:</span>
+          <span>{formatNumber(availableLots)}</span>
         </div>
         <div className="flex justify-between text-sm">
           <span>Quantity:</span>
-          <span>{safeQuantity}</span>
+          <span>{formatNumber(safeQuantity)}</span>
         </div>
         <div className="flex justify-between font-semibold border-t pt-2 mt-2">
           <span>Total Investment:</span>
-          <span>${totalAmount.toLocaleString()}</span>
+          <span>{formatCurrency(totalAmount, 'USD')}</span>
         </div>
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-md p-3">
+        <div role="alert" className="bg-red-50 border border-red-200 rounded-md p-3">
           <p className="text-red-800 text-sm">{error}</p>
         </div>
       )}
 
       <button
         type="submit"
-        disabled={isSubmitting || safeQuantity < 1 || safeQuantity > maxTokens}
-        className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white py-2 px-4 rounded-md font-medium transition-colors"
+        disabled={isSubmitting}
+        className="focus-ring w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white py-2 px-4 rounded-md font-medium transition-colors"
       >
-        {isSubmitting ? 'Processing Investment...' : `Invest $${totalAmount.toLocaleString()}`}
+        {isSubmitting ? 'Processing Investment...' : `Invest ${formatCurrency(totalAmount, 'USD')}`}
       </button>
 
       <p className="text-xs text-gray-500 text-center">
         This will open Freighter to sign the transaction. Make sure you&apos;re on Stellar testnet.
       </p>
     </form>
+    );
+  }
+
+  return (
+    <>
+      {/* Persistent live region: mounted once so step changes are announced. */}
+      <p role="status" aria-live="polite" aria-atomic="true" className="sr-only" data-testid="investment-step-announcer">
+        {stepAnnouncement}
+      </p>
+      {body}
+      <WalletSelectionModal
+        isOpen={view === 'connect' && showWalletModal}
+        onClose={() => {
+          setShowWalletModal(false);
+          setConnectError(null);
+        }}
+        onConnect={handleConnectWallet}
+        availableWallets={availableWallets ?? []}
+        isConnecting={isConnecting}
+        error={connectError}
+        expectedNetwork={configuredNetwork}
+        detectedNetwork={detectedNetwork}
+      />
+    </>
   );
 };
