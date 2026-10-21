@@ -30,6 +30,10 @@ import {
 import { AuthGuard } from '@nestjs/passport';
 import { Throttle } from '@nestjs/throttler';
 import { InvestmentsService } from './investments.service';
+import {
+  PortfolioSummary,
+  PortfolioSummaryService,
+} from './portfolio-summary.service';
 import { TaxReportService, TaxReportFormat } from './tax-report.service';
 import { TaxReportQueryDto } from './dto/tax-report-query.dto';
 import { CreateInvestmentDto } from './dto/create-investment.dto';
@@ -58,6 +62,7 @@ export class InvestmentsController {
     private readonly taxReportService: TaxReportService,
     private readonly receiptService: ReceiptService,
     private readonly invoiceService: InvoiceService,
+    private readonly portfolioSummaryService: PortfolioSummaryService,
   ) {}
 
   @Post()
@@ -252,6 +257,26 @@ export class InvestmentsController {
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
     });
+  }
+
+  @Get('summary')
+  @ApiOperation({
+    summary: 'Portfolio summary for the authenticated investor',
+    description:
+      'Totals and per-deal allocation used by the investor dashboard summary widget (#789). Cancelled and refunded positions are excluded from the invested total; realised amounts come from confirmed payment distributions.',
+  })
+  @ApiResponse({ status: 200, description: 'Portfolio summary' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({
+    status: 403,
+    description: 'Only investors can access this endpoint',
+  })
+  @UseGuards(KycGuard, RolesGuard)
+  @Roles('investor')
+  async getPortfolioSummary(
+    @Request() req: { user: { id: string } },
+  ): Promise<PortfolioSummary> {
+    return this.portfolioSummaryService.getSummary(req.user.id);
   }
 
   /**

@@ -154,6 +154,35 @@ export interface Investment {
   soroban_contract_id?: string | null;
 }
 
+/** One slice of the allocation-by-deal breakdown (#789). */
+export interface PortfolioAllocationSlice {
+  deal_id: string;
+  title: string;
+  token_symbol: string | null;
+  commodity: string | null;
+  deal_status: string | null;
+  amount_usd: number;
+  share_pct: number;
+  expected_return_usd: number;
+  realized_return_usd: number | null;
+  position_count: number;
+}
+
+export interface PortfolioSummary {
+  investor_id: string;
+  currency: "USD";
+  total_invested: number;
+  current_value: number;
+  expected_returns: number;
+  returns_paid: number;
+  roi_pct: number;
+  active_deal_count: number;
+  invested_deal_count: number;
+  position_count: number;
+  allocation: PortfolioAllocationSlice[];
+  generated_at: string;
+}
+
 interface PaginatedResponse<T> {
   data: T[];
   meta: {
@@ -304,12 +333,10 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`${API_BASE}${versionedPath}`, {
     ...init,
     credentials: "include",
-    headers: {
+    headers: traceHeaders({
       ...(typeof FormData !== "undefined" && init.body instanceof FormData
         ? {}
         : { "Content-Type": "application/json" }),
-    headers: traceHeaders({
-      "Content-Type": "application/json",
       ...authHeaders(),
       ...((init.headers as Record<string, string>) ?? {}),
     }),
@@ -483,6 +510,11 @@ export const apiClient = {
       "/investments/my-investments",
     );
     return unwrapPaginated(response).map(normalizeInvestment);
+  },
+
+  // GET /investments/summary — portfolio totals and per-deal allocation (#789)
+  async getPortfolioSummary(): Promise<PortfolioSummary> {
+    return apiFetch<PortfolioSummary>("/investments/summary");
   },
 
   // POST /shipments/milestones  — trade_deal_id + milestone + notes in body
