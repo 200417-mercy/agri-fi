@@ -63,6 +63,7 @@ import { PlatformIntegrationsModule } from './platform-integrations/platform-int
 import { StressTestingModule } from './stress-testing/stress-testing.module';
 import { LetterOfCreditModule } from './letter-of-credit/letter-of-credit.module';
 import { FederatedLearningModule } from './federated-learning/federated-learning.module';
+import { DidModule } from './did/did.module';
 
 @Module({
   controllers: [AppController, PublicController],
@@ -129,6 +130,7 @@ import { FederatedLearningModule } from './federated-learning/federated-learning
     StressTestingModule,
     LetterOfCreditModule,
     WatchlistModule,
+    DidModule,
   ],
   providers: [
     {

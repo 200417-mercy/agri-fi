@@ -10,6 +10,9 @@ import { DashboardTourWrapper } from "./DashboardTourWrapper";
 import SearchBar from "./SearchBar";
 import CallProvider from "./calling/CallProvider";
 import PredictiveDealForm from "./deals/PredictiveDealForm";
+import { MobileBottomNav } from "./navigation/MobileBottomNav";
+import { MobileOfflineSyncStatus } from "./mobile/MobileOfflineSyncStatus";
+import { MobileQuickDealModal } from "./mobile/MobileQuickDealModal";
 
 /* ── Nav config ───────────────────────────────────────────────────────────── */
 interface NavItem {
@@ -143,6 +146,7 @@ export default function DashboardLayout({ user, children }: Props) {
   const router = useRouter();
   const pathname = usePathname();
 
+  const [isQuickDealOpen, setIsQuickDealOpen] = useState(false);
   const nav = navForRole(user.role);
   const theme = ROLE_THEME[user.role] ?? ROLE_THEME.farmer;
 
@@ -244,7 +248,11 @@ export default function DashboardLayout({ user, children }: Props) {
           href="/dashboard/messages"
           onClick={onClose}
           className={
-            isActive({ href: "/dashboard/messages", label: "Messages", icon: null })
+            isActive({
+              href: "/dashboard/messages",
+              label: "Messages",
+              icon: null,
+            })
               ? "nav-link-active"
               : "nav-link"
           }
@@ -305,7 +313,8 @@ export default function DashboardLayout({ user, children }: Props) {
         </div>
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto">
+        <MobileOfflineSyncStatus />
+        <main className="flex-1 overflow-y-auto pb-20 md:pb-6">
           <div className="px-6 pt-6 max-w-7xl mx-auto">
             <KycStatusBanner />
           </div>
@@ -318,6 +327,12 @@ export default function DashboardLayout({ user, children }: Props) {
           </CallProvider>
         </main>
       </div>
+
+      <MobileBottomNav onOpenQuickDeal={() => setIsQuickDealOpen(true)} />
+      <MobileQuickDealModal
+        isOpen={isQuickDealOpen}
+        onClose={() => setIsQuickDealOpen(false)}
+      />
 
       {/* Interactive onboarding tour for first-time visitors */}
       <DashboardTourWrapper userRole={user.role} />
