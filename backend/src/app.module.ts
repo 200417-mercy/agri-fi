@@ -45,6 +45,7 @@ import { SearchModule } from './search/search.module';
 import { UpgradeModule } from './upgrade/upgrade.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { AccreditationModule } from './accreditation/accreditation.module';
+import { ZkpModule } from './zkp/zkp.module';
 
 @Module({
   controllers: [AppController, PublicController],
@@ -118,6 +119,7 @@ import { AccreditationModule } from './accreditation/accreditation.module';
     UpgradeModule,
     WebhooksModule,
     AccreditationModule,
+    ZkpModule,
   ],
   providers: [
     {
