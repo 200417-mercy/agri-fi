@@ -7,7 +7,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { PinoLogger } from 'nestjs-pino';
 import { TradeDeal, TradeDealStatus } from './entities/trade-deal.entity';
 import { Document, DocumentType } from './entities/document.entity';
@@ -18,6 +18,7 @@ import {
   Investment,
   InvestmentStatus,
 } from '../investments/entities/investment.entity';
+import { WatchlistItem } from '../watchlist/entities/watchlist-item.entity';
 import { StellarService } from '../stellar/stellar.service';
 import { QueueService } from '../queue/queue.service';
 import { RiskScoringService } from './risk-scoring.service';
@@ -94,6 +95,9 @@ export class TradeDealsService {
     @Optional() private readonly sorobanService?: SorobanService,
     private readonly logger: PinoLogger,
     private readonly dataSource: DataSource,
+    @Optional()
+    @InjectRepository(WatchlistItem)
+    private readonly watchlistRepo?: Repository<WatchlistItem>,
   ) {
     this.logger.setContext(TradeDealsService.name);
   }
@@ -225,6 +229,8 @@ export class TradeDealsService {
     q?: string;
     page?: number;
     limit?: number;
+    /** Marks rows this viewer has starred (#1003). */
+    viewerId?: string;
   }): Promise<{ data: any[]; total: number; page: number; limit: number }> {
     const page = query.page ?? 1;
     const limit = query.limit ?? 12;
@@ -400,6 +406,10 @@ export class TradeDealsService {
     }
 
     const [deals, total] = await qb.getManyAndCount();
+    const watchedIds = await this.watchedDealIds(
+      query.viewerId,
+      deals.map((deal) => deal.id),
+    );
 
     return {
       data: deals.map((deal) => ({
@@ -430,11 +440,32 @@ export class TradeDealsService {
         risk_rating: deal.riskRating,
         min_lot_size: Number(deal.minLotSize),
         lot_step: Number(deal.lotStep),
+        watched: watchedIds.has(deal.id),
       })),
       total,
       page,
       limit,
     };
+  }
+
+  /**
+   * Which of `dealIds` the viewer has starred. Reads `watchlist_item` through
+   * its own repository instead of importing WatchlistModule: that module is
+   * downstream of AuthModule, which already reaches TradeDealsModule, so an
+   * import would create a circular module graph.
+   */
+  private async watchedDealIds(
+    viewerId: string | undefined,
+    dealIds: readonly string[],
+  ): Promise<Set<string>> {
+    if (!viewerId || !this.watchlistRepo || dealIds.length === 0) {
+      return new Set();
+    }
+    const rows = await this.watchlistRepo.find({
+      where: { userId: viewerId, dealId: In([...dealIds]) },
+      select: { dealId: true },
+    });
+    return new Set(rows.map((row) => row.dealId));
   }
 
   async findOne(

@@ -9,6 +9,7 @@ import { TradeDealsService } from './trade-deals.service';
 import { DealCoFarmersService } from './deal-co-farmers.service';
 import { DealDeploymentService } from './deal-deployment.service';
 import { TradeDeal } from './entities/trade-deal.entity';
+import { WatchlistItem } from '../watchlist/entities/watchlist-item.entity';
 import { DealCoFarmer } from './entities/deal-co-farmer.entity';
 import { Document } from './entities/document.entity';
 import { DealHealthAlert } from './entities/deal-health-alert.entity';
@@ -51,6 +52,7 @@ const DEALS_CACHE_TTL_MS = 30_000;
       DealCoFarmer,
       DealHealthAlert,
       SystemAuditLog,
+      WatchlistItem,
     ]),
     StellarModule,
     QueueModule,
