@@ -29,9 +29,35 @@ import {
 } from './retry-policy';
 import { decryptPayload } from './queue.crypto';
 import { IdempotencyService } from './idempotency.service';
+import { ESCROW_ROUTING_KEYS } from '../escrow/escrow-consumer.registry';
 
+/**
+ * Canonical ownership of RabbitMQ routing keys (see #959).
+ *
+ * Escrow-related events (`deal.delivered`, `escrow.release`, …) are owned
+ * exclusively by `EscrowConsumer` in `escrow/escrow.consumer.ts`. This
+ * processor must NOT register `@EventPattern` handlers for any key listed in
+ * `ESCROW_ROUTING_KEYS` — doing so would create a second subscription on the
+ * same routing key and allow double-processing (two releases, two
+ * notifications) or ack races during redeploys.
+ *
+ * The single-ownership invariant is enforced by
+ * `backend/test/queue-ownership.e2e-spec.ts`.
+ */
 @Controller()
 export class QueueProcessor implements OnApplicationShutdown {
+  /**
+   * Routing keys this processor owns. Kept in sync with the `@EventPattern`
+   * decorators below; the architecture test asserts the two match and that
+   * none of these overlap with `ESCROW_ROUTING_KEYS`.
+   */
+  static readonly OWNED_ROUTING_KEYS: readonly string[] = [
+    'deal.publish',
+    'investment.fund',
+    'deal.funded',
+    'email.notification',
+    'deal.cleanup',
+  ];
   /**
    * Tracks all in-flight handler promises so onApplicationShutdown can await
    * them before the process exits, satisfying #696.
@@ -177,6 +203,10 @@ export class QueueProcessor implements OnApplicationShutdown {
   }
 
   // ── Event handlers ──────────────────────────────────────────────────────────
+  //
+  // NOTE (#959): escrow event handlers live exclusively in
+  // `escrow/escrow.consumer.ts`. Do not add `@EventPattern` methods here for
+  // any routing key in `ESCROW_ROUTING_KEYS` (imported above).
 
   @EventPattern('deal.publish')
   handleDealPublish(
@@ -909,6 +939,15 @@ export class QueueProcessor implements OnApplicationShutdown {
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────────
+
+  /**
+   * Returns true when `routingKey` is owned by `EscrowConsumer` rather than
+   * this processor. Exposed for the architecture test and for defensive
+   * assertions in tests that construct handlers directly.
+   */
+  static isEscrowOwned(routingKey: string): boolean {
+    return ESCROW_ROUTING_KEYS.includes(routingKey);
+  }
 
   /**
    * Initializes a Soroban FarmCampaign contract after a deal goes live.

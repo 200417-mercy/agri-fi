@@ -9,14 +9,29 @@ import {
   isTransientQueueError,
 } from '../queue/retry-policy';
 import { ESCROW_MAX_DELIVERY_ATTEMPTS } from '../queue/queue.dlq.constants';
+import { ESCROW_ROUTING_KEYS } from '../queue/queue-ownership.constants';
 
 interface DealDeliveredPayload {
   tradeDealId: string;
 }
 
 /**
- * Consumes deal.delivered events from the escrow queue and triggers the
- * escrow release flow via EscrowService.
+ * Canonical owner of all escrow routing keys.
+ *
+ * Ownership decision (#959): escrow event handling lives here, in `escrow/`,
+ * and NOT in `QueueProcessor`. `QueueProcessor` previously registered
+ * overlapping handlers for the same escrow routing keys, which allowed two
+ * consumers to double-process a delivery (two releases, two notifications) or
+ * fight over acking during redeploys / multi-prefetch delivery. Those duplicate
+ * handlers have been removed; every escrow `@EventPattern` is registered in
+ * this class and nowhere else.
+ *
+ * The single-ownership invariant is declared in `queue/queue-ownership.constants.ts`
+ * (routing key → owning consumer class) and guarded by an architecture test
+ * that asserts each routing key has exactly one subscription.
+ *
+ * Routing keys owned by this consumer:
+ *   • deal.delivered — triggers the escrow release flow via EscrowService.
  *
  * Retry strategy — broker-level (x-death headers):
  *   • Each failure nacks with requeue=true, causing RabbitMQ to redeliver.
@@ -139,7 +154,7 @@ export class EscrowConsumer implements OnApplicationShutdown {
     }
   }
 
-  @EventPattern('deal.delivered')
+  @EventPattern(ESCROW_ROUTING_KEYS.DEAL_DELIVERED)
   handleDealDelivered(
     @Payload() payload: DealDeliveredPayload,
     @Ctx() context: RmqContext,

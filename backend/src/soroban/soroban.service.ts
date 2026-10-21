@@ -758,4 +758,118 @@ export class SorobanService {
     );
     return Number(result ?? 0);
   }
+
+  // ── Federated Learning participant & reward helpers (#1191) ─────────────────
+
+  /**
+   * Verifies that a federated learning participant address is registered and
+   * active on-chain. Used during participant onboarding to ensure only
+   * verified platforms join the network.
+   *
+   * @param registryContractId Federated learning registry contract address
+   * @param participantAddress Participant's Stellar wallet address
+   */
+  async verifyFederatedParticipant(
+    registryContractId: string,
+    participantAddress: string,
+  ): Promise<boolean> {
+    const args = [new Address(participantAddress).toScVal()];
+    const result = await this.readContract(
+      registryContractId,
+      'is_participant',
+      args,
+    );
+    return Boolean(result);
+  }
+
+  /**
+   * Registers a new participant in the federated learning registry contract.
+   * Called during onboarding after off-chain identity checks pass.
+   *
+   * @param registryContractId Federated learning registry contract address
+   * @param participantAddress Participant's Stellar wallet address
+   * @param metadataHash       Hash of participant metadata (never raw data)
+   */
+  async registerFederatedParticipant(
+    registryContractId: string,
+    participantAddress: string,
+    metadataHash: string,
+  ): Promise<string> {
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      new Address(participantAddress).toScVal(),
+      nativeToScVal(metadataHash, { type: 'string' }),
+    ];
+    return this.invokeContract(registryContractId, 'register_participant', args);
+  }
+
+  /**
+   * Records a participant's contribution (e.g. a completed training round)
+   * on-chain so rewards can be settled transparently.
+   *
+   * @param registryContractId Federated learning registry contract address
+   * @param participantAddress Participant's Stellar wallet address
+   * @param roundId            Federated learning round identifier
+   * @param contributionScore  Normalized contribution score (0–10_000 bps)
+   */
+  async recordFederatedContribution(
+    registryContractId: string,
+    participantAddress: string,
+    roundId: string,
+    contributionScore: number,
+  ): Promise<string> {
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      new Address(participantAddress).toScVal(),
+      nativeToScVal(roundId, { type: 'string' }),
+      nativeToScVal(contributionScore, { type: 'u32' }),
+    ];
+    return this.invokeContract(
+      registryContractId,
+      'record_contribution',
+      args,
+    );
+  }
+
+  /**
+   * Disburses a contribution reward (in USDC stroops) to a participant.
+   *
+   * @param registryContractId Federated learning registry contract address
+   * @param participantAddress Participant's Stellar wallet address
+   * @param usdcToken          USDC asset contract address
+   * @param amountStroops      Reward amount in USDC stroops
+   */
+  async disburseFederatedReward(
+    registryContractId: string,
+    participantAddress: string,
+    usdcToken: string,
+    amountStroops: bigint,
+  ): Promise<string> {
+    if (typeof amountStroops !== 'bigint' || amountStroops <= 0n) {
+      throw new Error('Federated reward amount must be greater than zero');
+    }
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      new Address(participantAddress).toScVal(),
+      new Address(usdcToken).toScVal(),
+      nativeToScVal(amountStroops, { type: 'i128' }),
+    ];
+    return this.invokeContract(registryContractId, 'disburse_reward', args);
+  }
+
+  /**
+   * Reads a participant's accumulated contribution score from the registry.
+   */
+  async getFederatedContributionScore(
+    registryContractId: string,
+    participantAddress: string,
+  ): Promise<number> {
+    const args = [new Address(participantAddress).toScVal()];
+    const result = await this.readContract(
+      registryContractId,
+      'get_contribution_score',
+      args,
+    );
+    return Number(result ?? 0);
+  }
 }

@@ -9,6 +9,7 @@ import KycStatusBanner from "./dashboard/KycStatusBanner";
 import { DashboardTourWrapper } from "./DashboardTourWrapper";
 import SearchBar from "./SearchBar";
 import CallProvider from "./calling/CallProvider";
+import PredictiveDealForm from "./deals/PredictiveDealForm";
 
 /* ── Nav config ───────────────────────────────────────────────────────────── */
 interface NavItem {
@@ -308,7 +309,13 @@ export default function DashboardLayout({ user, children }: Props) {
           <div className="px-6 pt-6 max-w-7xl mx-auto">
             <KycStatusBanner />
           </div>
-          <CallProvider>{children}</CallProvider>
+          <CallProvider>
+            {children}
+            {/* Predictive deal creation form (crop/region/route autocomplete,
+                amount suggestions, templates, similarity warnings, batch
+                creation, and suggestion analytics). */}
+            <PredictiveDealForm userId={user.id} />
+          </CallProvider>
         </main>
       </div>
 
