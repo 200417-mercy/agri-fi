@@ -1,3 +1,12 @@
+/**
+ * @deprecated Import from '../common/retry-policy' directly.
+ * Re-exported here for backwards compatibility.
+ */
+export { createRetryPolicy, DEFAULT_RETRY_POLICY, STELLAR_RETRY_POLICY } from '../common/retry-policy';
+export type { RetryPolicy, RetryPolicyOptions } from '../common/retry-policy';
+
+// ─── Legacy helpers kept for compatibility ────────────────────────────────────
+
 export const DEFAULT_QUEUE_MAX_RETRIES = 3;
 
 export function isTransientQueueError(error: unknown): boolean {

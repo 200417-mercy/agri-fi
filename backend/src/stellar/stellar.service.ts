@@ -34,6 +34,7 @@ import {
   planTransactionBatches,
   generateBatchMemo,
 } from './utils/transaction-chunker';
+import { STELLAR_RETRY_POLICY } from '../common/retry-policy';
 
 export const SEQUENCE_REDIS_CLIENT = 'SEQUENCE_REDIS_CLIENT';
 const SEQUENCE_CACHE_TTL = 5; // seconds
@@ -769,7 +770,7 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
 
     // If escrow secret and asset info provided, transfer Trade_Tokens to investor
     if (encryptedEscrowSecret && assetCode && tokenAmount !== undefined) {
-      const escrowSecret = this.decryptSecret(encryptedEscrowSecret);
+      const escrowSecret = await this.decryptSecret(encryptedEscrowSecret);
       await this.transferTradeTokens(
         escrowSecret,
         escrowPublicKey,
@@ -837,7 +838,7 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
   /**
    * Decrypts a secret key encrypted by encryptSecret().
    */
-  async decryptSecret(encryptedSecret: string): string {
+  async decryptSecret(encryptedSecret: string): Promise<string> {
     return this.kmsService.decrypt(encryptedSecret);
   }
 
@@ -1899,13 +1900,12 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
   /**
    * Submits a transaction with exponential backoff retry for transient Horizon errors.
    * Retries on HTTP 429, 503, 504, and network timeout errors.
-   * Waits 1s → 2s → 4s before each retry; throws after 3 failed attempts.
+   * Uses STELLAR_RETRY_POLICY for backoff timing (Issue #952).
    */
   private async submitWithRetry(tx: any): Promise<any> {
     const RETRYABLE = new Set([429, 503, 504]);
-    const MAX_RETRIES = 3;
 
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    for (let attempt = 1; attempt <= STELLAR_RETRY_POLICY.maxAttempts; attempt++) {
       try {
         return await this.server.submitTransaction(tx);
       } catch (err: any) {
@@ -1915,11 +1915,11 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
         const isRetryable =
           (status !== undefined && RETRYABLE.has(status)) || isTimeout;
 
-        if (!isRetryable || attempt === MAX_RETRIES) {
+        if (!isRetryable || STELLAR_RETRY_POLICY.isExhausted(attempt)) {
           throw err;
         }
 
-        const delayMs = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s
+        const delayMs = STELLAR_RETRY_POLICY.nextAttemptMs(attempt);
         this.logger.warn(
           { attempt, status, delayMs },
           `Transient Horizon error (${status ?? 'timeout'}); retrying in ${delayMs}ms`,

@@ -43,12 +43,19 @@ export interface DealCleanupPayload extends BasePayload {
   tradeDealId: string;
 }
 
+/** Issue #953: payload for the escrow.release_notify queue event. */
+export interface EscrowReleaseNotifyPayload extends BasePayload {
+  dealId: string;
+  tradeTokenCode: string;
+}
+
 const EVENTS = {
   DEAL_DELIVERED: 'deal.delivered',
   INVESTMENT_FUND: 'investment.fund',
   DEAL_FUNDED: 'deal.funded',
   DEAL_PUBLISH: 'deal.publish',
   DEAL_CLEANUP: 'deal.cleanup',
+  ESCROW_RELEASE_NOTIFY: 'escrow.release_notify',
 } as const;
 
 @Injectable()
@@ -133,5 +140,13 @@ export class QueueService {
       `Deal ${enrichedPayload.tradeDealId} fully funded — notifying ${enrichedPayload.investors.length} investor(s)`,
     );
     await this.emit(EVENTS.DEAL_FUNDED, enrichedPayload);
+  }
+
+  /** Issue #953: publish escrow.release_notify after transaction commits. */
+  async enqueueEscrowReleaseNotify(
+    payload: Omit<EscrowReleaseNotifyPayload, 'correlationId'>,
+  ): Promise<void> {
+    const enrichedPayload = this.addCorrelationId(payload);
+    await this.emit(EVENTS.ESCROW_RELEASE_NOTIFY, enrichedPayload);
   }
 }

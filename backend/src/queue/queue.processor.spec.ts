@@ -13,6 +13,7 @@ describe('QueueProcessor', () => {
   let investmentRepo: { update: jest.Mock };
   let userRepo: { findOne: jest.Mock };
   let notificationsService: { sendEmail: jest.Mock };
+  let queueService: { emit: jest.Mock; enqueueDealCleanup: jest.Mock; enqueueEscrowReleaseNotify: jest.Mock };
   let logger: {
     setContext: jest.Mock;
     assign: jest.Mock;
@@ -39,6 +40,11 @@ describe('QueueProcessor', () => {
     investmentRepo = { update: jest.fn() };
     userRepo = { findOne: jest.fn() };
     notificationsService = { sendEmail: jest.fn() };
+    queueService = {
+      emit: jest.fn(),
+      enqueueDealCleanup: jest.fn().mockResolvedValue(undefined),
+      enqueueEscrowReleaseNotify: jest.fn().mockResolvedValue(undefined),
+    };
     logger = {
       setContext: jest.fn(),
       assign: jest.fn(),
@@ -61,6 +67,7 @@ describe('QueueProcessor', () => {
       {} as any, // config
       userRepo as any,
       notificationsService as any,
+      queueService as any,
       logger as any,
     );
   });

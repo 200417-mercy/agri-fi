@@ -17,11 +17,14 @@ import {
   DealFundedPayload,
   DealCleanupPayload,
   BasePayload,
+  QueueService,
 } from './queue.service';
 import {
   DEFAULT_QUEUE_MAX_RETRIES,
   getExponentialBackoffDelayMs,
 } from './retry-policy';
+import { DEFAULT_RETRY_POLICY } from '../common/retry-policy';
+import { ESCROW_RELEASE_NOTIFY } from './queue.constants';
 import { decryptPayload } from './queue.crypto';
 
 @Controller()
@@ -38,6 +41,7 @@ export class QueueProcessor {
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
     private readonly notificationsService: NotificationsService,
+    private readonly queueService: QueueService,
     private readonly logger: PinoLogger,
   ) {
     this.logger.setContext(QueueProcessor.name);
@@ -222,7 +226,7 @@ export class QueueProcessor {
 
         if (attempt < DEFAULT_QUEUE_MAX_RETRIES) {
           await new Promise((r) =>
-            setTimeout(r, getExponentialBackoffDelayMs(attempt, 500)),
+            setTimeout(r, DEFAULT_RETRY_POLICY.nextAttemptMs(attempt)),
           );
         }
       }
@@ -449,6 +453,98 @@ export class QueueProcessor {
         `Deal cleanup failed for deal ${data.tradeDealId}: ${error.message}`,
       );
       // We still ack the message, it's a best-effort cleanup
+    }
+
+    channel.ack(originalMsg);
+  }
+
+  @EventPattern(ESCROW_RELEASE_NOTIFY)
+  async handleEscrowReleaseNotify(
+    @Payload() encrypted: string,
+    @Ctx() context: RmqContext,
+  ) {
+    const channel = context.getChannelRef();
+    const originalMsg = context.getMessage();
+    const data = this.unwrap<{ dealId: string; tradeTokenCode: string }>(
+      encrypted,
+      ESCROW_RELEASE_NOTIFY,
+      channel,
+      originalMsg,
+    );
+    if (!data) return;
+
+    this.setCorrelationId(data as any);
+    this.logger.info(
+      { dealId: data.dealId },
+      `Processing ${ESCROW_RELEASE_NOTIFY} for deal ${data.dealId}`,
+    );
+
+    try {
+      // Idempotency guard: only process if deal is still in 'completed' status
+      const deal = await this.tradeDealRepo.findOne({
+        where: { id: data.dealId },
+        relations: ['farmer', 'trader'],
+      });
+
+      if (!deal) {
+        this.logger.warn(
+          { dealId: data.dealId },
+          `Deal ${data.dealId} not found — skipping release notify`,
+        );
+        channel.ack(originalMsg);
+        return;
+      }
+
+      if (deal.status !== 'completed') {
+        this.logger.warn(
+          { dealId: data.dealId, status: deal.status },
+          `Deal ${data.dealId} is not completed (status: ${deal.status}) — skipping duplicate notify`,
+        );
+        channel.ack(originalMsg);
+        return;
+      }
+
+      // Load confirmed investments for notification
+      const investments = await this.investmentRepo.find({
+        where: { tradeDealId: data.dealId },
+        relations: ['investor'],
+      });
+
+      // Send completion notifications via queue
+      await this.notificationsService.sendEmail(
+        deal.farmer?.email ?? '',
+        `Deal Completed: ${deal.commodity}`,
+        `Your deal for ${deal.commodity} (ID: ${data.dealId}) has been completed and escrow released.`,
+        `<h3>Deal Completed</h3><p>Your deal for <strong>${deal.commodity}</strong> (ID: ${data.dealId}) has been completed and funds disbursed.</p>`,
+      ).catch((err: any) =>
+        this.logger.warn({ err: err.message }, 'Failed to notify farmer'),
+      );
+
+      for (const inv of investments) {
+        if (inv.investor?.email) {
+          await this.notificationsService.sendEmail(
+            inv.investor.email,
+            `Investment Completed: ${deal.commodity}`,
+            `Your investment in deal ${data.dealId} (${deal.commodity}) has been completed.`,
+            `<h3>Investment Completed</h3><p>Your investment in <strong>${deal.commodity}</strong> (Deal ID: ${data.dealId}) has been completed.</p>`,
+          ).catch((err: any) =>
+            this.logger.warn({ err: err.message, investorId: inv.investorId }, 'Failed to notify investor'),
+          );
+        }
+      }
+
+      // Enqueue deal cleanup (close Stellar accounts)
+      await this.queueService.enqueueDealCleanup(data.dealId);
+
+      this.logger.info(
+        { dealId: data.dealId },
+        `${ESCROW_RELEASE_NOTIFY} processed successfully for deal ${data.dealId}`,
+      );
+    } catch (error: any) {
+      this.logger.error(
+        { dealId: data.dealId, error: error.message },
+        `${ESCROW_RELEASE_NOTIFY} failed for deal ${data.dealId}: ${error.message}`,
+      );
     }
 
     channel.ack(originalMsg);

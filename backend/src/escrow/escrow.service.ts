@@ -12,6 +12,7 @@ import {
 import { User } from '../auth/entities/user.entity';
 import { StellarService, InvestorShare } from '../stellar/stellar.service';
 import { QueueService } from '../queue/queue.service';
+import { splitPayoutUsd, allocateInvestorPayouts } from './payout-split';
 import { Keypair } from '@stellar/stellar-sdk';
 
 interface DealDeliveredPayload {
@@ -43,6 +44,9 @@ export class EscrowService {
 
     this.logger.info(`Processing deal.delivered for deal ${tradeDealId}`);
 
+    // tradeTokenCode captured from deal before the transaction closes
+    let tradeTokenCode = '';
+
     try {
       await this.dataSource.transaction(async (manager) => {
         // Load deal with relations
@@ -61,6 +65,9 @@ export class EscrowService {
           );
           return;
         }
+
+        // Capture tokenSymbol for the post-transaction queue message
+        tradeTokenCode = deal.tokenSymbol ?? '';
 
         // Load confirmed investments with investor details
         const investments = await manager.find(Investment, {
@@ -134,7 +141,7 @@ export class EscrowService {
           throw new Error(`Escrow secret key missing for deal ${tradeDealId}`);
         }
 
-        const escrowSecret = this.stellarService.decryptSecret(
+        const escrowSecret = await this.stellarService.decryptSecret(
           deal.escrowSecretKey,
         );
         const stellarTxIds = await this.stellarService.releaseEscrow(
@@ -148,12 +155,13 @@ export class EscrowService {
         // The current implementation returns a single transaction ID
         const stellarTxId = stellarTxIds[0];
 
-        // Create payment distribution records using cent-safe arithmetic.
+        // Create payment distribution records using shared split helpers (Issue #955).
         const paymentDistributions: PaymentDistribution[] = [];
         const totalValue = Number(deal.totalValue);
-        const [farmerAmount, platformAmount] = this.splitTotalValue(totalValue);
-        const investorAmounts = this.allocateProportionalAmounts(
-          totalValue,
+        const [farmerAmount, platformAmount] = splitPayoutUsd(totalValue);
+        const investorPool = totalValue - farmerAmount - platformAmount;
+        const investorAmounts = allocateInvestorPayouts(
+          investorPool > 0 ? investorPool : totalValue,
           investments.map((investment) => investment.tokenAmount),
         );
 
@@ -208,13 +216,18 @@ export class EscrowService {
           `Deal ${tradeDealId} completed successfully. Stellar TX: ${stellarTxId}`,
         );
 
-        // Enqueue email notifications (outside transaction to avoid rollback issues)
-        setTimeout(() => {
-          this.sendCompletionNotifications(tradeDealId, deal, investments);
-          this.queueService.enqueueDealCleanup(tradeDealId).catch((err) => {
-            this.logger.error(`Failed to enqueue deal cleanup: ${err.message}`);
-          });
-        }, 0);
+        // NOTE: Notifications and cleanup are intentionally published AFTER the
+        // DB transaction commits, as an escrow.release_notify queue message.
+        // This replaces the previous setTimeout(..., 0) pattern so that
+        // durability is tied to the queue rather than fire-and-forget callbacks.
+      });
+
+      // Publish escrow.release_notify outside the transaction so it only fires
+      // if the DB commit succeeded. The queue handler performs notifications and
+      // enqueues deal.cleanup idempotently.
+      await this.queueService.enqueueEscrowReleaseNotify({
+        dealId: tradeDealId,
+        tradeTokenCode,
       });
     } catch (error) {
       await this.handleEscrowFailure(tradeDealId, error);
@@ -265,10 +278,11 @@ export class EscrowService {
     try {
       // Notify farmer
       const totalValue = Number(deal.totalValue);
-      const [farmerAmount] = this.splitTotalValue(totalValue);
-      const investorPool = farmerAmount;
-      const investorReturnAmounts = this.allocateProportionalAmounts(
-        investorPool,
+      const [farmerAmount, platformAmount] = splitPayoutUsd(totalValue);
+      // investorPool is the total less farmer and platform fees
+      const investorPool = totalValue - farmerAmount - platformAmount;
+      const investorReturnAmounts = allocateInvestorPayouts(
+        investorPool > 0 ? investorPool : totalValue - farmerAmount,
         investments.map((investment) => investment.tokenAmount),
       );
 
@@ -322,47 +336,5 @@ export class EscrowService {
         error,
       );
     }
-  }
-
-  private splitTotalValue(totalValue: number): [number, number] {
-    const totalCents = this.toCents(totalValue);
-    const platformCents = Math.round(totalCents * 0.02);
-    const farmerCents = totalCents - platformCents;
-    return [this.fromCents(farmerCents), this.fromCents(platformCents)];
-  }
-
-  private allocateProportionalAmounts(
-    totalValue: number,
-    weights: number[],
-  ): number[] {
-    if (weights.length === 0) {
-      return [];
-    }
-
-    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
-    if (totalWeight <= 0) {
-      throw new Error('Cannot allocate amounts without positive weights.');
-    }
-
-    const totalCents = this.toCents(totalValue);
-    let allocatedCents = 0;
-
-    return weights.map((weight, index) => {
-      if (index === weights.length - 1) {
-        return this.fromCents(totalCents - allocatedCents);
-      }
-
-      const shareCents = Math.floor((totalCents * weight) / totalWeight);
-      allocatedCents += shareCents;
-      return this.fromCents(shareCents);
-    });
-  }
-
-  private toCents(value: number): number {
-    return Math.round((value + Number.EPSILON) * 100);
-  }
-
-  private fromCents(cents: number): number {
-    return cents / 100;
   }
 }

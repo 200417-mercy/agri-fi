@@ -22,6 +22,12 @@ export class DatabaseConfig implements TypeOrmOptionsFactory {
       logging: this.config.get<string>('NODE_ENV') === 'development' ? 'all' : ['query', 'error'],
       retryAttempts: 10,
       retryDelay: 3000,
+      // Issue #954: env-driven connection pool sizing
+      extra: {
+        max: parseInt(process.env.DB_POOL_MAX ?? '20', 10),
+        min: parseInt(process.env.DB_POOL_MIN ?? '2', 10),
+        idleTimeoutMillis: parseInt(process.env.DB_POOL_IDLE_TIMEOUT ?? '30000', 10),
+      },
     };
   }
 }
