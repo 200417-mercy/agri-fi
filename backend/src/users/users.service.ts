@@ -19,6 +19,7 @@ import { PaymentDistribution } from '../escrow/entities/payment-distribution.ent
 import { KycSubmission } from '../auth/entities/kyc-submission.entity';
 import { Document } from '../trade-deals/entities/document.entity';
 import { AuditLog } from '../database/entities/audit-log.entity';
+import { creditTierForScore, CreditScoreTier } from './credit-score.model';
 
 export interface CurrentUserProfile {
   id: string;
@@ -40,6 +41,8 @@ export interface PublicUserProfile {
   kycStatus: User['kycStatus'];
   walletAddress: string | null; // truncated
   creditScore: number | null;
+  /** Credit tier derived from `creditScore`; null when unscored. */
+  creditTier: CreditScoreTier | null;
   createdAt: Date;
   // computed
   dealsCompleted: number;
@@ -214,6 +217,10 @@ export class UsersService {
       kycStatus: user.kycStatus,
       walletAddress: truncatedWallet,
       creditScore: user.creditScore,
+      creditTier:
+        user.creditScore === null || user.creditScore === undefined
+          ? null
+          : creditTierForScore(user.creditScore),
       createdAt: user.createdAt,
       dealsCompleted,
       activeDeals,

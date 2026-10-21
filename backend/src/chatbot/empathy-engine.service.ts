@@ -25,7 +25,7 @@ export class EmpathyEngineService {
     happy: {
       acknowledgment: [
         "That's wonderful to hear!",
-        'I'm glad you\'re feeling positive!',
+        'I\'m glad you\'re feeling positive!',
         'Your enthusiasm is great to see!',
       ],
       response: [

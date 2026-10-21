@@ -438,7 +438,8 @@
     "creditTier": {
       "excellent": "Excellent",
       "good": "Bon",
-      "fair": "Correct"
+      "fair": "Correct",
+      "poor": "À améliorer"
     },
     "activeDeals": {
       "heading": "Contrats Actifs",
