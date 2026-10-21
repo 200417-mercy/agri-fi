@@ -300,6 +300,93 @@ export class SorobanService {
     return Number(result ?? 0);
   }
 
+  // ── Dispute resolution (issue #1004) ────────────────────────────────────────
+
+  /**
+   * Raises a dispute on a milestone, freezing its release and opening the
+   * contract's arbitrator voting window. The platform account is a dispute
+   * party (it is the campaign admin), so it can sign this call; the contract
+   * itself rejects callers that are not admin/farmer/staked investors.
+   */
+  async raiseCampaignDispute(
+    contractId: string,
+    milestoneIndex: number,
+  ): Promise<string> {
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      nativeToScVal(milestoneIndex, { type: 'u32' }),
+    ];
+    return this.invokeContract(contractId, 'raise_dispute', args);
+  }
+
+  /**
+   * Attaches an evidence reference (document URI) to an undecided dispute.
+   */
+  async submitDisputeEvidence(
+    contractId: string,
+    milestoneIndex: number,
+    uri: string,
+  ): Promise<string> {
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      nativeToScVal(milestoneIndex, { type: 'u32' }),
+      nativeToScVal(uri, { type: 'string' }),
+    ];
+    return this.invokeContract(contractId, 'submit_dispute_evidence', args);
+  }
+
+  /**
+   * Executes the recorded verdict for a dispute: releases the tranche to the
+   * farmer, or converts remaining escrow into investor refunds. Requires the
+   * voting window to have closed (or a quorum verdict to exist).
+   */
+  async resolveCampaignDispute(
+    contractId: string,
+    milestoneIndex: number,
+  ): Promise<string> {
+    const args = [
+      new Address(this.platformKeypair.publicKey()).toScVal(),
+      nativeToScVal(milestoneIndex, { type: 'u32' }),
+    ];
+    return this.invokeContract(contractId, 'resolve_dispute', args);
+  }
+
+  /**
+   * Authoritative on-chain dispute record for one milestone: phase, voting
+   * deadline, tally, evidence and outcome. `null` when no dispute was raised.
+   */
+  async getCampaignDispute(
+    contractId: string,
+    milestoneIndex: number,
+  ): Promise<unknown> {
+    const args = [nativeToScVal(milestoneIndex, { type: 'u32' })];
+    return this.readContract(contractId, 'get_dispute', args);
+  }
+
+  /** Voting window, in seconds, granted to disputes opened from now on. */
+  async getDisputeVotingWindow(contractId: string): Promise<number> {
+    const result = await this.readContract(
+      contractId,
+      'get_dispute_voting_window',
+      [],
+    );
+    return Number(result ?? 0);
+  }
+
+  /**
+   * Addresses allowed to vote. Falls back to the single legacy `arbitrator`
+   * storage entry when no pool was configured, matching the contract.
+   */
+  async getArbitratorPool(contractId: string): Promise<string[]> {
+    const result = await this.readContract(
+      contractId,
+      'get_arbitrator_pool',
+      [],
+    );
+    if (Array.isArray(result)) return result.map(String);
+    return [];
+  }
+
   // ── ProjectFactory contract methods ─────────────────────────────────────────
 
   async deployFarmCampaign(

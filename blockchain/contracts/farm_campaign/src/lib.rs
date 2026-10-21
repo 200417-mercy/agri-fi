@@ -8,7 +8,7 @@
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, symbol_short,
-    Address, Env, Map, String, Symbol, token,
+    Address, Env, Map, String, Symbol, Vec, token,
 };
 
 #[contracterror]
@@ -33,6 +33,14 @@ pub enum Error {
     NoDispute            = 16,
     InvalidBps           = 17,
     ReleaseCapExceeded   = 18,
+    VotingWindowClosed   = 19,
+    VotingNotOver        = 20,
+    AlreadyVoted         = 21,
+    NotAnArbitrator      = 22,
+    EvidenceLimitReached = 23,
+    EmptyArbitratorPool  = 24,
+    DisputeDecided       = 25,
+    InvalidEvidence      = 26,
 }
 
 #[contracttype]
@@ -47,7 +55,23 @@ pub enum DataKey {
     RefundableInvestments,
     Refunded,
     CloseReason,
+    /// Full dispute lifecycle record for a milestone (#1004). `Dispute(u32)`
+    /// above stays the live "milestone is frozen" boolean flag that
+    /// `has_dispute`/`release_milestone` already read, so instances deployed
+    /// before #1004 keep working; this key carries the state machine
+    /// (phase, voting window, votes, evidence, outcome) alongside it.
+    DisputeRecord(u32),
+    ArbitratorPool,
+    VotingWindow,
 }
+
+/// Arbitrator voting window used when a dispute is opened and no explicit
+/// window has been configured with `set_dispute_voting_window`.
+const DEFAULT_VOTING_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// Bounds dispute storage: evidence is written on-chain and an unbounded
+/// vector would let a dispute grow past the instance storage limit.
+const MAX_DISPUTE_EVIDENCE: u32 = 32;
 
 #[contracttype]
 #[derive(Clone)]
@@ -115,9 +139,69 @@ pub struct State {
     pub total_released: i128,
 }
 
+/// Lifecycle phase of a milestone dispute (#1004).
+///
+/// `Open` -> dispute raised, evidence accepted, no verdict yet.
+/// `Arbitration` -> at least one arbitrator vote recorded.
+/// `Verdict` -> quorum reached or the voting window closed; the outcome is
+/// fixed and can only be executed, never re-decided.
+/// `Resolved` -> the outcome has been executed.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DisputePhase {
+    Open,
+    Arbitration,
+    Verdict,
+    Resolved,
+}
+
+/// Executable outcome of a dispute: pay the milestone tranche to the farmer,
+/// or make whatever is still in escrow refundable to investors.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DisputeOutcome {
+    Release,
+    Refund,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct Evidence {
+    pub submitter: Address,
+    pub uri: String,
+    pub submitted_at: u64,
+}
+
+/// On-chain dispute record for one milestone.
+///
+/// The verdict is stored as `Option<bool>` (`true` = release to the farmer,
+/// `false` = refund the investors) because Soroban's struct serialization only
+/// supports `Option` of primitive values, not of a `contracttype` enum.
+/// `Dispute::outcome` hands it back as the `DisputeOutcome` the API uses.
+#[contracttype]
+#[derive(Clone)]
+pub struct Dispute {
+    pub milestone_index: u32,
+    pub raised_by: Address,
+    pub opened_at: u64,
+    /// Last ledger timestamp at which a vote still counts.
+    pub voting_deadline: u64,
+    pub phase: DisputePhase,
+    pub release_votes: u32,
+    pub refund_votes: u32,
+    pub voters: Vec<Address>,
+    pub evidence: Vec<Evidence>,
+    pub verdict: Option<bool>,
+}
+
+impl Dispute {
+    pub fn outcome(&self) -> Option<DisputeOutcome> {
+        self.verdict.map(FarmCampaignContract::outcome_of)
+    }
+}
+
 #[contract]
 pub struct FarmCampaignContract;
-
 #[contractimpl]
 impl FarmCampaignContract {
 
@@ -823,20 +907,142 @@ impl FarmCampaignContract {
         Ok(())
     }
 
-    /// Raise a dispute on a specific milestone
-    /// Can be called by admin or farmer
+    // ── Dispute resolution lifecycle (#1004) ─────────────────────────────────
+
+    fn configured_voting_window(env: &Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::VotingWindow)
+            .unwrap_or(DEFAULT_VOTING_WINDOW_SECS)
+    }
+
+    /// Voting window, in seconds, granted to newly opened disputes.
+    pub fn get_dispute_voting_window(env: Env) -> u64 {
+        Self::configured_voting_window(&env)
+    }
+
+    /// Admin-setable voting window. Applies to disputes opened after the call:
+    /// an open dispute keeps the deadline it was opened with, so a late
+    /// governance change can never move a live voting deadline.
+    pub fn set_dispute_voting_window(
+        env: Env,
+        admin: Address,
+        seconds: u64,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let config: Config = env.storage().instance().get(&DataKey::Config)
+            .ok_or(Error::NotInitialized)?;
+        if admin != config.admin { return Err(Error::Unauthorized); }
+        if seconds == 0 { return Err(Error::InvalidAmount); }
+        env.storage().instance().set(&DataKey::VotingWindow, &seconds);
+        Ok(())
+    }
+
+    fn address_in(pool: &Vec<Address>, addr: &Address) -> bool {
+        for i in 0..pool.len() {
+            if let Some(candidate) = pool.get(i) {
+                if candidate == *addr {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Arbitrators allowed to vote. Falls back to the single address stored by
+    /// `initialize`/`update_arbitrator`, so campaigns deployed before
+    /// multi-arbitrator voting keep working with a one-vote quorum.
+    fn arbitrator_pool(env: &Env) -> Vec<Address> {
+        if let Some(pool) = env.storage()
+            .instance()
+            .get::<DataKey, Vec<Address>>(&DataKey::ArbitratorPool)
+        {
+            if !pool.is_empty() {
+                return pool;
+            }
+        }
+        let mut fallback = Vec::new(env);
+        if let Some(arbitrator) = env.storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Arbitrator)
+        {
+            fallback.push_back(arbitrator);
+        }
+        fallback
+    }
+
+    pub fn get_arbitrator_pool(env: Env) -> Vec<Address> {
+        Self::arbitrator_pool(&env)
+    }
+
+    /// Replace the arbitrator roster. Gated the same way as
+    /// `update_arbitrator`: only the admin, and only before the raise ends.
+    pub fn set_arbitrator_pool(
+        env: Env,
+        admin: Address,
+        pool: Vec<Address>,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let config: Config = env.storage().instance().get(&DataKey::Config)
+            .ok_or(Error::NotInitialized)?;
+        if admin != config.admin { return Err(Error::Unauthorized); }
+        let state: State = env.storage().instance().get(&DataKey::State)
+            .ok_or(Error::NotInitialized)?;
+        if state.raise_ended || state.status != CampaignStatus::Open {
+            return Err(Error::Unauthorized);
+        }
+        if pool.is_empty() { return Err(Error::EmptyArbitratorPool); }
+        env.storage().instance().set(&DataKey::ArbitratorPool, &pool);
+        env.events()
+            .publish((Symbol::new(&env, "arbitrator_pool_set"),), pool.len());
+        Ok(())
+    }
+
+    /// Strict majority of the roster.
+    fn vote_quorum(env: &Env) -> u32 {
+        let size = Self::arbitrator_pool(env).len();
+        if size == 0 {
+            1
+        } else {
+            size / 2 + 1
+        }
+    }
+
+    fn is_dispute_party(env: &Env, caller: &Address, config: &Config) -> bool {
+        if caller == &config.admin || caller == &config.farmer {
+            return true;
+        }
+        // Investors fund the escrow, so they can raise and evidence disputes.
+        let investments: Map<Address, i128> = env.storage().instance()
+            .get(&DataKey::Investments)
+            .unwrap_or_else(|| Map::new(env));
+        investments.get(caller.clone()).unwrap_or(0) > 0
+    }
+
+    fn load_dispute(env: &Env, milestone_index: u32) -> Result<Dispute, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::DisputeRecord(milestone_index))
+            .ok_or(Error::NoDispute)
+    }
+
+    /// Raise a dispute on a specific milestone.
+    ///
+    /// Open by the admin, the farmer, or any investor with a stake in the
+    /// campaign. Opening freezes the milestone tranche (the legacy
+    /// `DataKey::Dispute` flag `release_milestone` still reads) and starts the
+    /// arbitrator voting window.
     pub fn raise_dispute(env: Env, caller: Address, milestone_index: u32) -> Result<(), Error> {
         caller.require_auth();
         let config: Config = env.storage().instance().get(&DataKey::Config)
             .ok_or(Error::NotInitialized)?;
         let state: State = env.storage().instance().get(&DataKey::State)
             .ok_or(Error::NotInitialized)?;
-        
-        // Only admin or farmer can raise disputes
-        if caller != config.admin && caller != config.farmer {
+
+        if !Self::is_dispute_party(&env, &caller, &config) {
             return Err(Error::Unauthorized);
         }
-        
+
         if state.status != CampaignStatus::Active { return Err(Error::NotFunded); }
         if milestone_index >= config.milestone_count { return Err(Error::MilestoneNotFound); }
         if env.storage().instance().has(&DataKey::MilestoneReleased(milestone_index)) {
@@ -845,59 +1051,246 @@ impl FarmCampaignContract {
         if env.storage().instance().has(&DataKey::Dispute(milestone_index)) {
             return Err(Error::DisputeActive);
         }
-        
-        // Set dispute flag
+
+        let now = env.ledger().timestamp();
+        let voting_deadline = now
+            .checked_add(Self::configured_voting_window(&env))
+            .ok_or(Error::InvalidAmount)?;
+
+        let dispute = Dispute {
+            milestone_index,
+            raised_by: caller.clone(),
+            opened_at: now,
+            voting_deadline,
+            phase: DisputePhase::Open,
+            release_votes: 0,
+            refund_votes: 0,
+            voters: Vec::new(&env),
+            evidence: Vec::new(&env),
+            verdict: None,
+        };
+
+        // Write the legacy freeze flag first so pre-#1004 readers
+        // (`has_dispute`, `release_milestone`) see the milestone blocked.
         env.storage().instance().set(&DataKey::Dispute(milestone_index), &true);
-        env.events().publish((Symbol::new(&env, "dispute_raised"), milestone_index), caller);
+        env.storage().instance().set(&DataKey::DisputeRecord(milestone_index), &dispute);
+        env.events()
+            .publish((Symbol::new(&env, "dispute_raised"), milestone_index), (caller, voting_deadline));
         Ok(())
     }
 
-    /// Resolve a dispute on a milestone
-    /// Can only be called by the arbitrator
-    /// approve: true to release milestone, false to deny
-    pub fn resolve_dispute(env: Env, arbitrator: Address, milestone_index: u32, approve: bool) -> Result<(), Error> {
-        arbitrator.require_auth();
+    /// Attach an evidence reference (document URI) to a dispute that has not
+    /// been decided yet. Parties only: admin, farmer, or a staked investor.
+    pub fn submit_dispute_evidence(
+        env: Env,
+        caller: Address,
+        milestone_index: u32,
+        uri: String,
+    ) -> Result<(), Error> {
+        caller.require_auth();
         let config: Config = env.storage().instance().get(&DataKey::Config)
             .ok_or(Error::NotInitialized)?;
-        let stored_arbitrator: Address = env.storage().instance().get(&DataKey::Arbitrator)
-            .ok_or(Error::NotInitialized)?;
-        
-        if arbitrator != stored_arbitrator { return Err(Error::Unauthorized); }
-        
-        if !env.storage().instance().has(&DataKey::Dispute(milestone_index)) {
-            return Err(Error::NoDispute);
+        if !Self::is_dispute_party(&env, &caller, &config) {
+            return Err(Error::Unauthorized);
         }
-        
-        // Remove dispute flag
-        env.storage().instance().remove(&DataKey::Dispute(milestone_index));
-        
-        if approve {
-            // If approved, release the milestone
-            let mut state: State = env.storage().instance().get(&DataKey::State)
-                .ok_or(Error::NotInitialized)?;
-            
-            let platform_fee = (state.total_raised * config.platform_fee_bps as i128) / 10_000;
-            let farmer_pool  = state.total_raised - platform_fee;
-            let tranche      = farmer_pool / config.milestone_count as i128;
+        if uri.is_empty() { return Err(Error::InvalidEvidence); }
 
-            // Lock this milestone before invoking the external transfer so a
-            // reentrant call sees it already released and errors out.
-            env.storage().instance().set(&DataKey::MilestoneReleased(milestone_index), &true);
-            state.milestones_released += 1;
-            if state.milestones_released >= config.milestone_count {
-                state.status = CampaignStatus::Delivered;
-                env.events().publish((Symbol::new(&env, "status_changed"), symbol_short!("delivered")), ());
-            }
-            env.storage().instance().set(&DataKey::State, &state);
-
-            let usdc = token::Client::new(&env, &config.usdc_token);
-            usdc.transfer(&env.current_contract_address(), &config.farmer, &tranche);
-
-            env.events().publish((symbol_short!("milestone"), milestone_index), tranche);
+        let mut dispute = Self::load_dispute(&env, milestone_index)?;
+        if dispute.phase == DisputePhase::Verdict || dispute.phase == DisputePhase::Resolved {
+            return Err(Error::DisputeDecided);
         }
-        
-        env.events().publish((Symbol::new(&env, "dispute_resolved"), milestone_index), approve);
+        if dispute.evidence.len() >= MAX_DISPUTE_EVIDENCE {
+            return Err(Error::EvidenceLimitReached);
+        }
+
+        let now = env.ledger().timestamp();
+        dispute.evidence.push_back(Evidence {
+            submitter: caller.clone(),
+            uri: uri.clone(),
+            submitted_at: now,
+        });
+        env.storage().instance().set(&DataKey::DisputeRecord(milestone_index), &dispute);
+        env.events()
+            .publish((Symbol::new(&env, "dispute_evidence"), milestone_index), (caller, uri));
         Ok(())
+    }
+
+    /// Cast an arbitrator vote on an open dispute. Votes only count inside the
+    /// voting window, each arbitrator votes once, and a majority immediately
+    /// records the verdict so it can no longer be changed.
+    pub fn cast_dispute_vote(
+        env: Env,
+        voter: Address,
+        milestone_index: u32,
+        release: bool,
+    ) -> Result<(), Error> {
+        voter.require_auth();
+        let pool = Self::arbitrator_pool(&env);
+        if !Self::address_in(&pool, &voter) { return Err(Error::NotAnArbitrator); }
+
+        let mut dispute = Self::load_dispute(&env, milestone_index)?;
+        if dispute.verdict.is_some() { return Err(Error::DisputeDecided); }
+
+        let now = env.ledger().timestamp();
+        if now > dispute.voting_deadline { return Err(Error::VotingWindowClosed); }
+        if Self::address_in(&dispute.voters, &voter) { return Err(Error::AlreadyVoted); }
+
+        dispute.voters.push_back(voter.clone());
+        if release {
+            dispute.release_votes += 1;
+        } else {
+            dispute.refund_votes += 1;
+        }
+        dispute.phase = DisputePhase::Arbitration;
+
+        let quorum = Self::vote_quorum(&env);
+        if dispute.release_votes >= quorum {
+            dispute.phase = DisputePhase::Verdict;
+            dispute.verdict = Some(true);
+        } else if dispute.refund_votes >= quorum {
+            dispute.phase = DisputePhase::Verdict;
+            dispute.verdict = Some(false);
+        }
+        env.storage().instance().set(&DataKey::DisputeRecord(milestone_index), &dispute);
+
+        env.events()
+            .publish((Symbol::new(&env, "dispute_vote"), milestone_index), (voter, release));
+        if let Some(decision) = dispute.verdict {
+            env.events()
+                .publish((Symbol::new(&env, "dispute_verdict"), milestone_index), decision);
+        }
+        Ok(())
+    }
+
+    /// Record the verdict once the voting window has elapsed.
+    ///
+    /// Majority of the votes cast wins; a tie or a window that closed with no
+    /// votes at all resolves to `Refund`, so escrowed principal is never paid
+    /// out without an affirmative decision. Replaying this call returns the
+    /// verdict that was already recorded.
+    pub fn finalize_dispute(
+        env: Env,
+        caller: Address,
+        milestone_index: u32,
+    ) -> Result<DisputeOutcome, Error> {
+        caller.require_auth();
+        let mut dispute = Self::load_dispute(&env, milestone_index)?;
+        if let Some(decision) = dispute.verdict {
+            return Ok(Self::outcome_of(decision));
+        }
+
+        let now = env.ledger().timestamp();
+        if now <= dispute.voting_deadline { return Err(Error::VotingNotOver); }
+
+        let release = dispute.release_votes > dispute.refund_votes;
+        dispute.phase = DisputePhase::Verdict;
+        dispute.verdict = Some(release);
+        env.storage().instance().set(&DataKey::DisputeRecord(milestone_index), &dispute);
+        env.events()
+            .publish((Symbol::new(&env, "dispute_verdict"), milestone_index), release);
+        Ok(Self::outcome_of(release))
+    }
+
+    fn outcome_of(release: bool) -> DisputeOutcome {
+        if release {
+            DisputeOutcome::Release
+        } else {
+            DisputeOutcome::Refund
+        }
+    }
+
+    /// Execute a dispute's recorded verdict and unblock the milestone.
+    ///
+    /// `Release` pays the milestone tranche to the farmer; `Refund` turns
+    /// whatever principal is still held in escrow into investor refunds, using
+    /// the same proportional math as `mark_failed`. Callable by an arbitrator
+    /// or the admin once the verdict exists.
+    ///
+    /// Idempotent by design: the freeze flag and the `Resolved` phase are
+    /// written before any external transfer, so a replayed call (an indexer
+    /// retry, a second click) returns the outcome without moving money twice.
+    pub fn resolve_dispute(
+        env: Env,
+        caller: Address,
+        milestone_index: u32,
+    ) -> Result<DisputeOutcome, Error> {
+        caller.require_auth();
+        let config: Config = env.storage().instance().get(&DataKey::Config)
+            .ok_or(Error::NotInitialized)?;
+        let pool = Self::arbitrator_pool(&env);
+        if !Self::address_in(&pool, &caller) && caller != config.admin {
+            return Err(Error::Unauthorized);
+        }
+
+        let mut dispute = Self::load_dispute(&env, milestone_index)?;
+        let release = match dispute.verdict {
+            Some(release) => release,
+            None => {
+                // Verdict not recorded yet: allow the window to close and
+                // derive it here rather than requiring a separate finalize tx.
+                let now = env.ledger().timestamp();
+                if now <= dispute.voting_deadline { return Err(Error::VotingNotOver); }
+                let derived = dispute.release_votes > dispute.refund_votes;
+                dispute.phase = DisputePhase::Verdict;
+                dispute.verdict = Some(derived);
+                env.storage().instance().set(&DataKey::DisputeRecord(milestone_index), &dispute);
+                env.events()
+                    .publish((Symbol::new(&env, "dispute_verdict"), milestone_index), derived);
+                derived
+            }
+        };
+        let outcome = Self::outcome_of(release);
+        if dispute.phase == DisputePhase::Resolved {
+            return Ok(outcome);
+        }
+
+        // Clear the freeze flag and record `Resolved` before touching any
+        // external token so a reentrant call short-circuits above.
+        env.storage().instance().remove(&DataKey::Dispute(milestone_index));
+        dispute.phase = DisputePhase::Resolved;
+        env.storage().instance().set(&DataKey::DisputeRecord(milestone_index), &dispute);
+
+        let mut state: State = env.storage().instance().get(&DataKey::State)
+            .ok_or(Error::NotInitialized)?;
+        let usdc = token::Client::new(&env, &config.usdc_token);
+
+        match outcome {
+            DisputeOutcome::Release => {
+                let platform_fee = (state.total_raised * config.platform_fee_bps as i128) / 10_000;
+                let farmer_pool  = state.total_raised - platform_fee;
+                let tranche      = farmer_pool / config.milestone_count as i128;
+
+                env.storage().instance().set(&DataKey::MilestoneReleased(milestone_index), &true);
+                state.milestones_released += 1;
+                // Track the payout so later refund math can never hand back
+                // principal that already left escrow (`mark_failed` reads this).
+                state.total_released = state
+                    .total_released
+                    .checked_add(tranche)
+                    .ok_or(Error::InvalidAmount)?;
+                if state.milestones_released >= config.milestone_count {
+                    state.status = CampaignStatus::Delivered;
+                    env.events().publish((Symbol::new(&env, "status_changed"), symbol_short!("delivered")), ());
+                }
+                env.storage().instance().set(&DataKey::State, &state);
+
+                usdc.transfer(&env.current_contract_address(), &config.farmer, &tranche);
+                env.events().publish((symbol_short!("milestone"), milestone_index), tranche);
+            }
+            DisputeOutcome::Refund => {
+                state.status = CampaignStatus::Failed;
+                let retained = state.total_released;
+                let total_refundable =
+                    Self::apply_proportional_refund(&env, &mut state, retained)?;
+                env.storage().instance().set(&DataKey::State, &state);
+                env.events().publish((Symbol::new(&env, "status_changed"), symbol_short!("failed")), ());
+                env.events().publish((Symbol::new(&env, "failed_refund"),), total_refundable);
+            }
+        }
+
+        env.events()
+            .publish((Symbol::new(&env, "dispute_resolved"), milestone_index), release);
+        Ok(outcome)
     }
 
     /// Update the arbitrator address
@@ -972,6 +1365,21 @@ impl FarmCampaignContract {
 
     pub fn has_dispute(env: Env, milestone_index: u32) -> bool {
         env.storage().instance().has(&DataKey::Dispute(milestone_index))
+    }
+
+    /// Full dispute record for a milestone, including phase, voting deadline,
+    /// tally, evidence and recorded outcome. `None` once no dispute was ever
+    /// opened on that milestone.
+    pub fn get_dispute(env: Env, milestone_index: u32) -> Option<Dispute> {
+        env.storage().instance().get(&DataKey::DisputeRecord(milestone_index))
+    }
+
+    pub fn get_dispute_phase(env: Env, milestone_index: u32) -> Option<DisputePhase> {
+        Self::load_dispute(&env, milestone_index).ok().map(|d| d.phase)
+    }
+
+    pub fn get_dispute_voting_deadline(env: Env, milestone_index: u32) -> Option<u64> {
+        Self::load_dispute(&env, milestone_index).ok().map(|d| d.voting_deadline)
     }
 
     pub fn get_arbitrator(env: Env) -> Result<Address, Error> {
@@ -1074,6 +1482,8 @@ mod tests {
         env: Env,
         contract_id: Address,
         admin: Address,
+        farmer: Address,
+        arbitrator: Address,
         usdc_address: Address,
         investor_a: Address,
         investor_b: Address,
@@ -1111,6 +1521,8 @@ mod tests {
             env,
             contract_id,
             admin,
+            farmer,
+            arbitrator,
             usdc_address,
             investor_a,
             investor_b,
@@ -1438,5 +1850,490 @@ mod tests {
         let result = setup.client().try_mark_failed(&setup.admin);
         assert_eq!(result, Ok(Ok(())));
         assert_eq!(setup.client().get_refundable_amount(&setup.investor_a), refundable_before);
+    }
+
+    // ── Dispute resolution lifecycle (#1004) ──────────────────────────────────
+
+    /// Fund the campaign to its target and move it to Active — the only status
+    /// a milestone dispute can be raised against.
+    fn advance_to_active(setup: &CampaignSetup) {
+        invest(setup, &setup.investor_a, 60);
+        invest(setup, &setup.investor_b, 40);
+        setup.client().approve(&setup.admin);
+    }
+
+    fn active_campaign() -> CampaignSetup {
+        let setup = setup_campaign(100, 150);
+        advance_to_active(&setup);
+        setup
+    }
+
+    fn dispute_window() -> u64 {
+        DEFAULT_VOTING_WINDOW_SECS
+    }
+
+    #[test]
+    fn raising_a_dispute_opens_the_voting_window_and_freezes_the_milestone() {
+        let setup = active_campaign();
+
+        setup.client().raise_dispute(&setup.admin, &0);
+        assert!(setup.client().has_dispute(&0));
+
+        let dispute = setup.client().get_dispute(&0).expect("dispute recorded");
+        assert_eq!(dispute.phase, DisputePhase::Open);
+        assert_eq!(dispute.raised_by, setup.admin);
+        assert_eq!(dispute.opened_at, 100);
+        assert_eq!(dispute.voting_deadline, 100 + dispute_window());
+        assert_eq!(dispute.release_votes, 0);
+        assert_eq!(dispute.refund_votes, 0);
+        assert!(dispute.outcome().is_none());
+
+        // The frozen tranche cannot be released while the dispute is live.
+        assert_eq!(
+            setup.client().try_release_milestone(&setup.admin, &0),
+            Err(Ok(Error::DisputeActive))
+        );
+    }
+
+    #[test]
+    fn investors_can_raise_and_evidence_a_dispute() {
+        let setup = active_campaign();
+
+        setup
+            .client()
+            .raise_dispute(&setup.investor_a, &1);
+        assert!(setup.client().has_dispute(&1));
+
+        let uri = String::from_str(&setup.env, "ipfs://evidence-delivery-1");
+        setup
+            .client()
+            .submit_dispute_evidence(&setup.investor_a, &1, &uri);
+
+        let dispute = setup.client().get_dispute(&1).expect("dispute recorded");
+        assert_eq!(dispute.evidence.len(), 1);
+        let entry = dispute.evidence.get(0).expect("evidence entry");
+        assert_eq!(entry.submitter, setup.investor_a);
+        assert_eq!(entry.uri, uri);
+        assert_eq!(entry.submitted_at, 100);
+    }
+
+    #[test]
+    fn unrelated_addresses_cannot_raise_or_evidence_a_dispute() {
+        let setup = active_campaign();
+        let stranger = Address::generate(&setup.env);
+
+        assert_eq!(
+            setup.client().try_raise_dispute(&stranger, &0),
+            Err(Ok(Error::Unauthorized))
+        );
+
+        setup.client().raise_dispute(&setup.farmer, &0);
+        let uri = String::from_str(&setup.env, "ipfs://not-yours");
+        assert_eq!(
+            setup.client().try_submit_dispute_evidence(&stranger, &0, &uri),
+            Err(Ok(Error::Unauthorized))
+        );
+    }
+
+    #[test]
+    fn votes_are_only_accepted_inside_the_voting_window() {
+        let setup = setup_campaign(100, 150);
+        let arb_b = Address::generate(&setup.env);
+        let pool = Vec::from_array(&setup.env, [setup.arbitrator.clone(), arb_b.clone()]);
+        setup.client().set_arbitrator_pool(&setup.admin, &pool);
+
+        advance_to_active(&setup);
+        setup.client().raise_dispute(&setup.admin, &0);
+
+        // One second before the deadline still counts.
+        setup.env.ledger().set_timestamp(100 + dispute_window() - 1);
+        setup.client().cast_dispute_vote(&setup.arbitrator, &0, &false);
+        assert_eq!(setup.client().get_dispute(&0).expect("dispute recorded").refund_votes, 1);
+
+        // Past the deadline the window is closed, so the second arbitrator's
+        // vote — which would otherwise have decided the dispute — is rejected.
+        setup.env.ledger().set_timestamp(100 + dispute_window() + 1);
+        assert_eq!(
+            setup.client().try_cast_dispute_vote(&arb_b, &0, &true),
+            Err(Ok(Error::VotingWindowClosed))
+        );
+        let dispute = setup.client().get_dispute(&0).expect("dispute recorded");
+        assert_eq!(dispute.release_votes, 0);
+        assert!(dispute.outcome().is_none());
+    }
+
+    #[test]
+    fn only_arbitrator_pool_members_can_vote() {
+        let setup = active_campaign();
+        setup.client().raise_dispute(&setup.admin, &0);
+        let stranger = Address::generate(&setup.env);
+
+        assert_eq!(
+            setup.client().try_cast_dispute_vote(&stranger, &0, &true),
+            Err(Ok(Error::NotAnArbitrator))
+        );
+    }
+
+    #[test]
+    fn an_arbitrator_votes_once_and_the_verdict_is_single() {
+        let setup = active_campaign();
+        setup.client().raise_dispute(&setup.admin, &0);
+
+        setup.client().cast_dispute_vote(&setup.arbitrator, &0, &true);
+        assert_eq!(
+            setup.client().try_cast_dispute_vote(&setup.arbitrator, &0, &false),
+            Err(Ok(Error::DisputeDecided))
+        );
+
+        let dispute = setup.client().get_dispute(&0).expect("dispute recorded");
+        assert_eq!(dispute.refund_votes, 0);
+        assert_eq!(dispute.outcome(), Some(DisputeOutcome::Release));
+    }
+
+    #[test]
+    fn majority_of_a_multi_arbitrator_pool_is_required_for_a_verdict() {
+        let setup = setup_campaign(100, 150);
+        let arb_b = Address::generate(&setup.env);
+        let arb_c = Address::generate(&setup.env);
+        let pool = Vec::from_array(&setup.env, [setup.arbitrator.clone(), arb_b.clone(), arb_c.clone()]);
+        setup.client().set_arbitrator_pool(&setup.admin, &pool);
+        assert_eq!(setup.client().get_arbitrator_pool().len(), 3);
+
+        advance_to_active(&setup);
+        setup.client().raise_dispute(&setup.admin, &0);
+
+        // One of three votes is below the majority quorum of two: no verdict.
+        setup.client().cast_dispute_vote(&setup.arbitrator, &0, &true);
+        let dispute = setup.client().get_dispute(&0).expect("dispute recorded");
+        assert_eq!(dispute.phase, DisputePhase::Arbitration);
+        assert!(dispute.outcome().is_none());
+
+        // Second matching vote reaches quorum and locks the verdict.
+        setup.client().cast_dispute_vote(&arb_b, &0, &true);
+        let dispute = setup.client().get_dispute(&0).expect("dispute recorded");
+        assert_eq!(dispute.phase, DisputePhase::Verdict);
+        assert_eq!(dispute.outcome(), Some(DisputeOutcome::Release));
+    }
+
+    #[test]
+    fn arbitrator_pool_cannot_be_changed_once_the_raise_has_started() {
+        let setup = setup_campaign(100, 150);
+        advance_to_active(&setup);
+        let pool = Vec::from_array(&setup.env, [setup.arbitrator.clone()]);
+
+        assert_eq!(
+            setup.client().try_set_arbitrator_pool(&setup.admin, &pool),
+            Err(Ok(Error::Unauthorized))
+        );
+    }
+
+    #[test]
+    fn empty_arbitrator_pool_is_rejected() {
+        let setup = setup_campaign(100, 150);
+        let pool: Vec<Address> = Vec::new(&setup.env);
+
+        assert_eq!(
+            setup.client().try_set_arbitrator_pool(&setup.admin, &pool),
+            Err(Ok(Error::EmptyArbitratorPool))
+        );
+    }
+
+    #[test]
+    fn finalize_before_the_window_closes_is_rejected() {
+        let setup = active_campaign();
+        setup.client().raise_dispute(&setup.admin, &0);
+
+        assert_eq!(
+            setup.client().try_finalize_dispute(&setup.admin, &0),
+            Err(Ok(Error::VotingNotOver))
+        );
+    }
+
+    #[test]
+    fn an_unanimous_release_vote_finalizes_to_release() {
+        let setup = active_campaign();
+        setup.client().raise_dispute(&setup.admin, &0);
+        setup.client().cast_dispute_vote(&setup.arbitrator, &0, &true);
+
+        setup.env.ledger().set_timestamp(100 + dispute_window() + 1);
+        assert_eq!(
+            setup.client().finalize_dispute(&setup.investor_a, &0),
+            DisputeOutcome::Release
+        );
+    }
+
+    #[test]
+    fn a_window_that_closes_without_votes_resolves_to_refund() {
+        // Escrowed principal is never paid out without an affirmative
+        // decision: silence from the arbitrators protects the investors.
+        let setup = active_campaign();
+        setup.client().raise_dispute(&setup.admin, &0);
+
+        // The deadline is inclusive for voting, so the window is still open at
+        // exactly `voting_deadline` and cannot be finalized yet.
+        setup.env.ledger().set_timestamp(100 + dispute_window());
+        assert_eq!(
+            setup.client().try_finalize_dispute(&setup.investor_a, &0),
+            Err(Ok(Error::VotingNotOver))
+        );
+
+        setup.env.ledger().set_timestamp(100 + dispute_window() + 1);
+        assert_eq!(
+            setup.client().finalize_dispute(&setup.investor_a, &0),
+            DisputeOutcome::Refund
+        );
+        let dispute = setup.client().get_dispute(&0).expect("dispute recorded");
+        assert_eq!(dispute.phase, DisputePhase::Verdict);
+
+        assert_eq!(
+            setup.client().try_cast_dispute_vote(&setup.arbitrator, &0, &true),
+            Err(Ok(Error::DisputeDecided))
+        );
+    }
+
+    #[test]
+    fn a_vote_cast_exactly_at_the_deadline_still_counts() {
+        let setup = active_campaign();
+        setup.client().raise_dispute(&setup.admin, &0);
+
+        setup.env.ledger().set_timestamp(100 + dispute_window());
+        setup.client().cast_dispute_vote(&setup.arbitrator, &0, &true);
+
+        let dispute = setup.client().get_dispute(&0).expect("dispute recorded");
+        assert_eq!(dispute.release_votes, 1);
+        assert_eq!(dispute.outcome(), Some(DisputeOutcome::Release));
+    }
+
+    #[test]
+    fn a_tie_resolves_to_refund() {
+        let setup = setup_campaign(100, 150);
+        let arb_b = Address::generate(&setup.env);
+        let pool = Vec::from_array(&setup.env, [setup.arbitrator.clone(), arb_b.clone()]);
+        setup.client().set_arbitrator_pool(&setup.admin, &pool);
+
+        advance_to_active(&setup);
+        setup.client().raise_dispute(&setup.admin, &0);
+        setup.client().cast_dispute_vote(&setup.arbitrator, &0, &true);
+        setup.client().cast_dispute_vote(&arb_b, &0, &false);
+
+        setup.env.ledger().set_timestamp(100 + dispute_window() + 1);
+        assert_eq!(
+            setup.client().finalize_dispute(&setup.investor_a, &0),
+            DisputeOutcome::Refund
+        );
+    }
+
+    #[test]
+    fn release_outcome_pays_the_farmer_the_disputed_tranche() {
+        let setup = active_campaign();
+        setup.client().raise_dispute(&setup.admin, &0);
+        setup.client().cast_dispute_vote(&setup.arbitrator, &0, &true);
+
+        let outcome = setup.client().resolve_dispute(&setup.arbitrator, &0);
+        assert_eq!(outcome, DisputeOutcome::Release);
+
+        // 100 raised, 2% platform fee, 3 milestones => tranche of 98/3.
+        let tranche = 98 / 3;
+        assert_eq!(setup.usdc().balance(&setup.farmer), tranche);
+        let state = setup.client().get_state();
+        assert_eq!(state.milestones_released, 1);
+        assert_eq!(state.total_released, tranche);
+        assert!(!setup.client().has_dispute(&0));
+        assert_eq!(
+            setup.client().get_dispute(&0).expect("dispute kept for indexing").phase,
+            DisputePhase::Resolved
+        );
+    }
+
+    #[test]
+    fn refund_outcome_makes_the_remaining_escrow_refundable() {
+        let setup = active_campaign();
+        setup.client().raise_dispute(&setup.admin, &0);
+        setup.client().cast_dispute_vote(&setup.arbitrator, &0, &false);
+
+        assert_eq!(
+            setup.client().resolve_dispute(&setup.arbitrator, &0),
+            DisputeOutcome::Refund
+        );
+
+        assert_eq!(setup.client().get_refundable_amount(&setup.investor_a), 60);
+        assert_eq!(setup.client().get_refundable_amount(&setup.investor_b), 40);
+        assert!(setup.client().is_raise_ended());
+
+        setup.client().refund(&setup.investor_a);
+        setup.client().refund(&setup.investor_b);
+        assert_eq!(setup.usdc().balance(&setup.investor_a), 60);
+        assert_eq!(setup.usdc().balance(&setup.investor_b), 40);
+    }
+
+    #[test]
+    fn resolving_twice_is_a_no_op_and_never_pays_twice() {
+        // Outcome replay: an indexer retry or a second arbitrator click must
+        // not move money a second time.
+        let setup = active_campaign();
+        setup.client().raise_dispute(&setup.admin, &0);
+        setup.client().cast_dispute_vote(&setup.arbitrator, &0, &true);
+
+        assert_eq!(setup.client().resolve_dispute(&setup.arbitrator, &0), DisputeOutcome::Release);
+        let farmer_balance = setup.usdc().balance(&setup.farmer);
+
+        assert_eq!(setup.client().resolve_dispute(&setup.admin, &0), DisputeOutcome::Release);
+        assert_eq!(setup.client().resolve_dispute(&setup.arbitrator, &0), DisputeOutcome::Release);
+
+        assert_eq!(setup.usdc().balance(&setup.farmer), farmer_balance);
+        assert_eq!(setup.client().get_state().milestones_released, 1);
+        // The milestone stays released even though the dispute is replayed.
+        assert_eq!(
+            setup.client().try_release_milestone(&setup.admin, &0),
+            Err(Ok(Error::MilestoneAlreadyDone))
+        );
+    }
+
+    #[test]
+    fn resolving_without_a_verdict_requires_the_window_to_close() {
+        let setup = active_campaign();
+        setup.client().raise_dispute(&setup.admin, &0);
+
+        assert_eq!(
+            setup.client().try_resolve_dispute(&setup.arbitrator, &0),
+            Err(Ok(Error::VotingNotOver))
+        );
+
+        setup.env.ledger().set_timestamp(100 + dispute_window() + 1);
+        assert_eq!(
+            setup.client().resolve_dispute(&setup.arbitrator, &0),
+            DisputeOutcome::Refund
+        );
+    }
+
+    #[test]
+    fn resolve_is_limited_to_arbitrators_and_the_admin() {
+        let setup = active_campaign();
+        setup.client().raise_dispute(&setup.admin, &0);
+        setup.client().cast_dispute_vote(&setup.arbitrator, &0, &true);
+        let stranger = Address::generate(&setup.env);
+
+        assert_eq!(
+            setup.client().try_resolve_dispute(&stranger, &0),
+            Err(Ok(Error::Unauthorized))
+        );
+    }
+
+    #[test]
+    fn evidence_cannot_be_added_after_the_verdict() {
+        let setup = active_campaign();
+        setup.client().raise_dispute(&setup.admin, &0);
+        setup.client().cast_dispute_vote(&setup.arbitrator, &0, &true);
+
+        let uri = String::from_str(&setup.env, "ipfs://too-late");
+        assert_eq!(
+            setup.client().try_submit_dispute_evidence(&setup.farmer, &0, &uri),
+            Err(Ok(Error::DisputeDecided))
+        );
+    }
+
+    #[test]
+    fn empty_evidence_references_are_rejected() {
+        let setup = active_campaign();
+        setup.client().raise_dispute(&setup.admin, &0);
+        let empty = String::from_str(&setup.env, "");
+
+        assert_eq!(
+            setup.client().try_submit_dispute_evidence(&setup.admin, &0, &empty),
+            Err(Ok(Error::InvalidEvidence))
+        );
+    }
+
+    #[test]
+    fn only_one_dispute_can_be_open_per_milestone() {
+        let setup = active_campaign();
+        setup.client().raise_dispute(&setup.admin, &0);
+
+        assert_eq!(
+            setup.client().try_raise_dispute(&setup.farmer, &0),
+            Err(Ok(Error::DisputeActive))
+        );
+    }
+
+    #[test]
+    fn disputes_cannot_be_raised_on_unreleased_or_unknown_milestones() {
+        let setup = active_campaign();
+
+        assert_eq!(
+            setup.client().try_raise_dispute(&setup.admin, &3),
+            Err(Ok(Error::MilestoneNotFound))
+        );
+
+        setup.client().release_milestone(&setup.admin, &0);
+        assert_eq!(
+            setup.client().try_raise_dispute(&setup.admin, &0),
+            Err(Ok(Error::MilestoneAlreadyDone))
+        );
+    }
+
+    #[test]
+    fn disputes_require_an_active_campaign() {
+        let setup = setup_campaign(100, 150);
+        invest(&setup, &setup.investor_a, 60);
+        invest(&setup, &setup.investor_b, 40);
+
+        // Funded but not yet approved to Active.
+        assert_eq!(
+            setup.client().try_raise_dispute(&setup.admin, &0),
+            Err(Ok(Error::NotFunded))
+        );
+    }
+
+    #[test]
+    fn the_voting_window_is_configurable_and_pinned_when_the_dispute_opens() {
+        let setup = setup_campaign(100, 150);
+        setup.client().set_dispute_voting_window(&setup.admin, &600);
+        assert_eq!(setup.client().get_dispute_voting_window(), 600);
+
+        advance_to_active(&setup);
+        setup.client().raise_dispute(&setup.admin, &0);
+        assert_eq!(
+            setup.client().get_dispute_voting_deadline(&0),
+            Some(100 + 600)
+        );
+
+        // Retracing the window later must not move a live dispute's deadline.
+        setup.client().set_dispute_voting_window(&setup.admin, &3600);
+        assert_eq!(
+            setup.client().get_dispute_voting_deadline(&0),
+            Some(100 + 600)
+        );
+        setup.env.ledger().set_timestamp(100 + 601);
+        assert_eq!(
+            setup.client().try_cast_dispute_vote(&setup.arbitrator, &0, &true),
+            Err(Ok(Error::VotingWindowClosed))
+        );
+    }
+
+    #[test]
+    fn voting_window_cannot_be_zero_and_only_admin_sets_it() {
+        let setup = setup_campaign(100, 150);
+
+        assert_eq!(
+            setup.client().try_set_dispute_voting_window(&setup.admin, &0),
+            Err(Ok(Error::InvalidAmount))
+        );
+        assert_eq!(
+            setup.client().try_set_dispute_voting_window(&setup.farmer, &600),
+            Err(Ok(Error::Unauthorized))
+        );
+    }
+
+    #[test]
+    fn resolving_the_last_milestone_marks_the_campaign_delivered() {
+        let setup = active_campaign();
+
+        setup.client().release_milestone(&setup.admin, &0);
+        setup.client().release_milestone(&setup.admin, &1);
+        setup.client().raise_dispute(&setup.investor_a, &2);
+        setup.client().cast_dispute_vote(&setup.arbitrator, &2, &true);
+
+        assert_eq!(setup.client().resolve_dispute(&setup.arbitrator, &2), DisputeOutcome::Release);
+        assert!(setup.client().get_state().status == CampaignStatus::Delivered);
     }
 }
