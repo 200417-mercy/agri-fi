@@ -483,7 +483,8 @@
     "creditTier": {
       "excellent": "Excelente",
       "good": "Bom",
-      "fair": "Regular"
+      "fair": "Regular",
+      "poor": "Precisa de melhoria"
     },
     "activeDeals": {
       "heading": "Negócios Ativos",

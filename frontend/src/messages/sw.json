@@ -438,7 +438,8 @@
     "creditTier": {
       "excellent": "Bora sana",
       "good": "Nzuri",
-      "fair": "Ya kutosha"
+      "fair": "Ya kutosha",
+      "poor": "Inahitaji kuboreshwa"
     },
     "activeDeals": {
       "heading": "Mikataba Inayoendelea",

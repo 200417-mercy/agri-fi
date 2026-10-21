@@ -429,7 +429,8 @@
     "creditTier": {
       "excellent": "Excelente",
       "good": "Bueno",
-      "fair": "Regular"
+      "fair": "Regular",
+      "poor": "Necesita mejora"
     },
     "activeDeals": {
       "heading": "Tratos Activos",

@@ -413,7 +413,8 @@
     "creditTier": {
       "excellent": "Excellent",
       "good": "Good",
-      "fair": "Fair"
+      "fair": "Fair",
+      "poor": "Needs improvement"
     },
     "activeDeals": {
       "heading": "Active Deals",

@@ -106,17 +106,74 @@ export interface Deal {
   esg_rating?: string | null;
   esg_status?: string | null;
   esg_breakdown?: Record<string, any> | null;
+  /** Credit score of the farmer behind the deal (#1160) */
+  farmer_credit_score?: number | null;
+  /** Credit tier of the farmer behind the deal (#1160) */
+  farmer_credit_tier?: CreditScoreTier | null;
 }
+
+/** One month of a farmer's credit score history (#1160) */
+export interface CreditScoreHistoryPoint {
+  month: string;
+  score: number;
+  tier: CreditScoreTier;
+  maxDealSizeUsdc: number;
+  change: number | null;
+}
+
+/** A farmer's standing against the farmers in their country (#1160) */
+export interface CreditScoreBenchmark {
+  country: string;
+  peerCount: number;
+  averageScore: number;
+  medianScore: number;
+  percentile: number;
+  score: number | null;
+  tier: CreditScoreTier | null;
+  tierDistribution: Record<CreditScoreTier, number>;
+}
+
+/** A farmer's challenge to their credit score (#1160) */
+export interface CreditScoreDispute {
+  id: string;
+  userId: string;
+  disputedScore: number;
+  reason: string;
+  factor: string | null;
+  status: "open" | "under_review" | "resolved" | "rejected";
+  resolution: string | null;
+  correctedScore: number | null;
+  resolvedBy: string | null;
+  resolvedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A deal recommended because of the credit standing of its farmer (#1160) */
+export interface CreditInvestmentRecommendation {
+  dealId: string;
+  commodity: string;
+  totalValue: number;
+  expectedRoi: number | null;
+  farmerCreditScore: number;
+  farmerCreditTier: CreditScoreTier;
+  maxDealSizeUsdc: number;
+  rationale: string;
+}
+
+export type CreditScoreTier = "Excellent" | "Good" | "Fair" | "Poor";
 
 export interface CreditScoreDisclosure {
   score: number;
-  tier: "Excellent" | "Good" | "Fair" | "Poor";
+  tier: CreditScoreTier;
   maxDealSizeUsdc: number;
   factors: {
     onTimeRepaymentRate: number;
     dealCompletionRate: number;
     dealDefaultRate: number;
     shipmentMilestoneComplianceRate: number;
+    shipmentAccuracyRate: number;
+    documentQualityRate: number;
     kycVerificationAgeDays: number;
   };
   breakdown: Record<
@@ -568,6 +625,47 @@ export const apiClient = {
   // GET /users/me/credit-score — Farmer Credit Score Disclosure (#1016)
   async getCreditScore(): Promise<CreditScoreDisclosure> {
     return apiFetch("/users/me/credit-score");
+  },
+
+  // GET /credit-scoring/me/history — monthly credit score evolution (#1160)
+  async getCreditScoreHistory(months = 12): Promise<CreditScoreHistoryPoint[]> {
+    return apiFetch(`/credit-scoring/me/history?months=${months}`);
+  },
+
+  // GET /credit-scoring/me/benchmark — regional peer comparison (#1160)
+  async getCreditScoreBenchmark(): Promise<CreditScoreBenchmark> {
+    return apiFetch("/credit-scoring/me/benchmark");
+  },
+
+  // GET /credit-scoring/me/disputes — the farmer's disputes (#1160)
+  async getCreditScoreDisputes(): Promise<CreditScoreDispute[]> {
+    return apiFetch("/credit-scoring/me/disputes");
+  },
+
+  // POST /credit-scoring/me/disputes — file a dispute (#1160)
+  async fileCreditScoreDispute(input: {
+    reason: string;
+    factor?: string;
+  }): Promise<CreditScoreDispute> {
+    return apiFetch("/credit-scoring/me/disputes", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  },
+
+  // GET /credit-scoring/investment-recommendations — credit-ranked deals (#1160)
+  async getCreditInvestmentRecommendations(
+    minTier?: CreditScoreTier,
+    limit = 10,
+  ): Promise<{
+    minTier: CreditScoreTier;
+    count: number;
+    recommendations: CreditInvestmentRecommendation[];
+  }> {
+    const tier = minTier ? `&minTier=${encodeURIComponent(minTier)}` : "";
+    return apiFetch(
+      `/credit-scoring/investment-recommendations?limit=${limit}${tier}`,
+    );
   },
 
   // POST /trade-deals/:id/esg-questionnaire — ESG impact scoring (#1012)
