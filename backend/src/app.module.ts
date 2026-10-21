@@ -62,6 +62,7 @@ import { TracingMiddleware } from './tracing/tracing.middleware';
 import { PlatformIntegrationsModule } from './platform-integrations/platform-integrations.module';
 import { StressTestingModule } from './stress-testing/stress-testing.module';
 import { LetterOfCreditModule } from './letter-of-credit/letter-of-credit.module';
+import { FederatedLearningModule } from './federated-learning/federated-learning.module';
 
 @Module({
   controllers: [AppController, PublicController],

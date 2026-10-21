@@ -68,6 +68,7 @@ export class TradeDealsController {
     private readonly esgScoringService: EsgScoringService,
     private readonly dealHealthService: DealHealthService,
     private readonly riskScoringService: RiskScoringService,
+    private readonly dealSuggestionsService: DealSuggestionsService,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
   ) {}
 
@@ -585,5 +586,135 @@ export class TradeDealsController {
   @ApiOperation({ summary: 'Platform-level ESG analytics, rating distributions, and financial return correlations' })
   async getEsgAnalytics() {
     return this.esgScoringService.getEsgAnalytics();
+  }
+
+  // ── Predictive text & smart suggestions (#1180) ───────────────────────────
+
+  @Get('suggestions')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary:
+      'Get predictive text and smart suggestions for deal creation fields (crops, regions, routes, amounts, recurring fields)',
+  })
+  @ApiQuery({ name: 'field', required: false, example: 'commodity' })
+  @ApiQuery({ name: 'q', required: false, example: 'coc' })
+  @ApiQuery({ name: 'limit', required: false, example: 10 })
+  @ApiResponse({ status: 200, description: 'Ranked suggestions for the field' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async getSuggestions(
+    @Request() req: AuthRequest,
+    @Query() query: SuggestionQueryDto,
+  ) {
+    return this.dealSuggestionsService.getSuggestions(req.user.id, query);
+  }
+
+  @Get('templates')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: 'List deal templates for template-based deal creation',
+  })
+  @ApiResponse({ status: 200, description: 'Available deal templates' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async listTemplates(@Request() req: AuthRequest) {
+    return this.dealSuggestionsService.listTemplates(req.user.id);
+  }
+
+  @Post('from-template')
+  @UseGuards(AuthGuard('jwt'), RolesGuard, KycGuard)
+  @Roles('trader', 'farmer')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: 'Create a draft trade deal pre-filled from a template',
+  })
+  @ApiResponse({ status: 201, description: 'Trade deal created from template' })
+  @ApiResponse({ status: 400, description: 'Validation error' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 403, description: 'Role or KYC requirement not met' })
+  @ApiResponse({ status: 404, description: 'Template not found' })
+  async createFromTemplate(
+    @Request() req: AuthRequest,
+    @Body() dto: CreateFromTemplateDto,
+  ): Promise<TradeDeal> {
+    const deal = await this.dealSuggestionsService.createFromTemplate(
+      req.user.id,
+      dto,
+    );
+    await (this.cacheManager.stores[0] as any).reset();
+    return deal;
+  }
+
+  @Post('batch')
+  @UseGuards(AuthGuard('jwt'), RolesGuard, KycGuard)
+  @Roles('trader', 'farmer')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: 'Create multiple similar draft deals from a template in one request',
+  })
+  @ApiResponse({ status: 201, description: 'Batch of trade deals created' })
+  @ApiResponse({ status: 400, description: 'Validation error' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 403, description: 'Role or KYC requirement not met' })
+  @ApiResponse({ status: 404, description: 'Template not found' })
+  async createBatch(
+    @Request() req: AuthRequest,
+    @Body() dto: BatchDealCreationDto,
+  ): Promise<{ created: TradeDeal[]; failed: any[] }> {
+    const result = await this.dealSuggestionsService.createBatch(
+      req.user.id,
+      dto,
+    );
+    await (this.cacheManager.stores[0] as any).reset();
+    return result;
+  }
+
+  @Post('similarity-check')
+  @UseGuards(AuthGuard('jwt'))
+  @HttpCode(200)
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary:
+      'Detect existing deals similar to the proposed deal and warn about potential duplicates',
+  })
+  @ApiResponse({ status: 200, description: 'Similarity check result' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async checkSimilarity(
+    @Request() req: AuthRequest,
+    @Body() dto: DealSimilarityCheckDto,
+  ) {
+    return this.dealSuggestionsService.checkSimilarity(req.user.id, dto);
+  }
+
+  @Post('suggestion-feedback')
+  @UseGuards(AuthGuard('jwt'))
+  @HttpCode(200)
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary:
+      'Record suggestion acceptance/rejection or user correction to improve future suggestions',
+  })
+  @ApiResponse({ status: 200, description: 'Feedback recorded' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async recordSuggestionFeedback(
+    @Request() req: AuthRequest,
+    @Body() dto: SuggestionFeedbackDto,
+  ) {
+    return this.dealSuggestionsService.recordFeedback(req.user.id, dto);
+  }
+
+  @Get('suggestion-analytics')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin', 'trader')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary:
+      'Get suggestion analytics: acceptance rate and estimated time saved',
+  })
+  @ApiResponse({ status: 200, description: 'Suggestion analytics summary' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 403, description: 'Role requirement not met' })
+  async getSuggestionAnalytics(@Request() req: AuthRequest) {
+    return this.dealSuggestionsService.getAnalytics(req.user.id, req.user.role);
   }
 }

@@ -11,6 +11,8 @@ import { DealDeploymentService } from './deal-deployment.service';
 import { TradeDeal } from './entities/trade-deal.entity';
 import { WatchlistItem } from '../watchlist/entities/watchlist-item.entity';
 import { DealCoFarmer } from './entities/deal-co-farmer.entity';
+import { DealSuggestionEvent } from './entities/deal-suggestion-event.entity';
+import { DealTemplate } from './entities/deal-template.entity';
 import { Document } from './entities/document.entity';
 import { DealHealthAlert } from './entities/deal-health-alert.entity';
 import { Investment } from '../investments/entities/investment.entity';
@@ -28,6 +30,7 @@ import { EsgScoringService } from './esg-scoring.service';
 import { DealHealthMonitorService } from './deal-health-monitor.service';
 import { DealHealthService } from './deal-health.service';
 import { ActivityFeedService } from './activity-feed.service';
+import { DealSuggestionService } from './deal-suggestion.service';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AuditModule } from '../audit/audit.module';
 import { SorobanModule } from '../soroban/soroban.module';
@@ -107,6 +110,7 @@ const DEALS_CACHE_TTL_MS = 30_000;
     DealHealthMonitorService,
     DealHealthService,
     ActivityFeedService,
+    DealSuggestionService,
     makeGaugeProvider({
       name: 'deal_health_alerts_active_total',
       help: 'Total number of active (unresolved) deal health alerts, labelled by alert type.',
@@ -121,6 +125,7 @@ const DEALS_CACHE_TTL_MS = 30_000;
     EsgScoringService,
     DealHealthService,
     ActivityFeedService,
+    DealSuggestionService,
   ],
 })
 export class TradeDealsModule {}
