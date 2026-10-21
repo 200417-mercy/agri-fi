@@ -23,6 +23,8 @@ coverage
 test-results
 test-output.txt
 playwright-report
+visual-playwright-report
+visual-test-results
 .nyc_output
 
 # Logs
