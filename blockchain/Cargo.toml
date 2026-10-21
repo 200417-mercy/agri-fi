@@ -24,6 +24,7 @@ members = [
     "contracts/marketplace_settlement",
     "contracts/price-feed",
     "contracts/project_factory",
+    "contracts/reputation",
     "contracts/revenue_distributor",
 ]
 resolver = "2"

@@ -95,7 +95,9 @@ export class QueueService implements TransactionalQueueService {
 
   public async emit(pattern: string, data: unknown): Promise<void> {
     try {
-      this.client.emit(pattern, encryptPayload(data));
+      // The queue name is bound as AAD so the ciphertext cannot be replayed
+      // onto a different queue.
+      this.client.emit(pattern, encryptPayload(data, pattern));
       this.analytics?.record(pattern, 'published');
       this.logger.info({ event: pattern }, `Emitted event: ${pattern}`);
     } catch (err) {

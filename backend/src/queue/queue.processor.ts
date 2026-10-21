@@ -155,7 +155,7 @@ export class QueueProcessor implements OnApplicationShutdown {
     msg: any,
   ): T | null {
     try {
-      return decryptPayload<T>(encrypted);
+      return decryptPayload<T>(encrypted, pattern);
     } catch (err: any) {
       this.logger.error(
         {
