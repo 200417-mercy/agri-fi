@@ -51,6 +51,7 @@ import { UpgradeModule } from './upgrade/upgrade.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { SecretsModule } from './secrets/secrets.module';
 import { PublicApiModule } from './public-api/public-api.module';
+import { SelfHealingModule } from './self-healing/self-healing.module';
 import { KycRulesModule } from './kyc-rules/kyc-rules.module';
 import { AccreditationModule } from './accreditation/accreditation.module';
 import { ChatModule } from './chat/chat.module';
@@ -119,6 +120,7 @@ import { DidModule } from './did/did.module';
     WebhooksModule,
     SecretsModule,
     PublicApiModule,
+    SelfHealingModule,
     ReferralsModule,
     KycRulesModule,
     AccreditationModule,
