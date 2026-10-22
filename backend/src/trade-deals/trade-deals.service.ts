@@ -14,6 +14,7 @@ import { Document, DocumentType } from './entities/document.entity';
 import { ShipmentMilestone } from '../shipments/entities/shipment-milestone.entity';
 import { CreateTradeDealDto } from './dto/create-trade-deal.dto';
 import { User } from '../auth/entities/user.entity';
+import { creditTierForScore, CreditScoreTier } from '../users/credit-score.model';
 import {
   Investment,
   InvestmentStatus,
@@ -542,6 +543,9 @@ export class TradeDealsService {
       query.viewerId,
       deals.map((deal) => deal.id),
     );
+    const farmerCredits = await this.farmerCreditScores(
+      deals.map((deal) => deal.farmerId),
+    );
 
     return {
       data: deals.map((deal) => ({
@@ -573,11 +577,46 @@ export class TradeDealsService {
         min_lot_size: Number(deal.minLotSize),
         lot_step: Number(deal.lotStep),
         watched: watchedIds.has(deal.id),
+        // #1160 — the credit standing of the farmer behind the deal.
+        farmer_credit_score: farmerCredits.get(deal.farmerId)?.score ?? null,
+        farmer_credit_tier: farmerCredits.get(deal.farmerId)?.tier ?? null,
       })),
       total,
       page,
       limit,
     };
+  }
+
+  /**
+   * Credit scores and tiers for the farmers behind a page of deals (#1160).
+   *
+   * Read in one query so the marketplace listing stays a single round trip
+   * for the farmers on the page.
+   */
+  private async farmerCreditScores(
+    farmerIds: readonly string[],
+  ): Promise<Map<string, { score: number; tier: CreditScoreTier }>> {
+    const unique = [...new Set(farmerIds.filter(Boolean))];
+    if (unique.length === 0) {
+      return new Map();
+    }
+
+    const farmers = await this.userRepo.find({
+      where: { id: In(unique) },
+      select: { id: true, creditScore: true },
+    });
+
+    const scores = new Map<string, { score: number; tier: CreditScoreTier }>();
+    for (const farmer of farmers) {
+      if (farmer.creditScore === null || farmer.creditScore === undefined) {
+        continue;
+      }
+      scores.set(farmer.id, {
+        score: farmer.creditScore,
+        tier: creditTierForScore(farmer.creditScore),
+      });
+    }
+    return scores;
   }
 
   /**
@@ -659,6 +698,12 @@ export class TradeDealsService {
       risk_score: deal.riskScore,
       risk_rating: deal.riskRating,
       risk_breakdown: deal.riskBreakdown,
+      // #1160 — the credit standing of the farmer behind the deal.
+      farmer_credit_score: deal.farmer?.creditScore ?? null,
+      farmer_credit_tier:
+        deal.farmer?.creditScore === null || deal.farmer?.creditScore === undefined
+          ? null
+          : creditTierForScore(deal.farmer.creditScore),
       // #835 — lot sizing exposed to the investment form
       min_lot_size: Number(deal.minLotSize),
       lot_step: Number(deal.lotStep),

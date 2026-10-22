@@ -5,6 +5,10 @@ global:
 
 rule_files:
   - /etc/prometheus/alerts.yaml
+  # Self-healing infrastructure rules (#1194). Alerts in this file carry the
+  # `self_healing: "true"` label so that the backend can turn them into
+  # detected issues and remediate them automatically.
+  - /etc/prometheus/self-healing-alerts.yaml
 
 scrape_configs:
   # ── RabbitMQ Prometheus plugin (port 15692) ──────────────────────────────

@@ -11,19 +11,22 @@ erDiagram
     Achievement {
         string id PK
     }
-    InvestmentArchive {
+    AMMLiquidityPosition {
         string id PK
     }
-    ShipmentMilestoneArchive {
+    AMMMiningReward {
         string id PK
     }
-    TradeDealArchive {
+    AMMPool {
         string id PK
     }
-    SystemAuditLog {
+    AMMSwap {
         string id PK
     }
     ApiKey {
+        string id PK
+    }
+    BiometricCredential {
         string id PK
     }
     KycSubmission {
@@ -50,34 +53,13 @@ erDiagram
     ChatParticipant {
         string id PK
     }
+    ChatbotConversation {
+        string id PK
+    }
     CollaborationPermission {
         string id PK
     }
     CollaborationSession {
-        string id PK
-    }
-    ComplianceReport {
-        string id PK
-    }
-    AdminAction {
-        string id PK
-    }
-    AuditLog {
-        string id PK
-    }
-    ComplianceAlert {
-        string id PK
-    }
-    FeeConfiguration {
-        string id PK
-    }
-    LoginLog {
-        string id PK
-    }
-    SecurityIpBlock {
-        string id PK
-    }
-    TransactionLog {
         string id PK
     }
     DocumentVersion {
@@ -93,27 +75,6 @@ erDiagram
         string id PK
     }
     InvestorEmailSequence {
-        string id PK
-    }
-    MilestoneReleaseRecord {
-        string id PK
-    }
-    PaymentDistribution {
-        string id PK
-    }
-    AutoInvestPlan {
-        string id PK
-    }
-    InvestmentEvent {
-        string id PK
-    }
-    Investment {
-        string id PK
-    }
-    SecondaryOrder {
-        string id PK
-    }
-    SecondaryTrade {
         string id PK
     }
     KycJurisdictionRule {
@@ -132,9 +93,6 @@ erDiagram
         string id PK
     }
     OracleObservation {
-        string id PK
-    }
-    OutboxEntity {
         string id PK
     }
     CalendarConnection {
@@ -158,22 +116,35 @@ erDiagram
     PartnerApiUsage {
         string id PK
     }
+    NettingCycle {
+        string id PK
+    }
+    NettingObligation {
+        string id PK
+    }
+    ContractDispute {
+        string id PK
+    }
+    FarmerCreditScoreDispute {
+        string id PK
+    }
+    FarmerCreditScoreHistory {
+        string id PK
+    }
+    WatchlistItem {
+        string id PK
+    }
+    %% Domain: DEALS
+    MilestoneComment {
+        string id PK
+    }
+    MilestoneVerification {
+        string id PK
+    }
     ShipmentMilestone {
         string id PK
     }
     ShipmentSensorReading {
-        string id PK
-    }
-    AccountMergeRecovery {
-        string id PK
-    }
-    Sep24Transaction {
-        string id PK
-    }
-    StellarHistory {
-        string id PK
-    }
-    UnrecognisedPayment {
         string id PK
     }
     DealCoFarmer {
@@ -191,20 +162,123 @@ erDiagram
     SorobanContractDeployment {
         string id PK
     }
-    FarmerCreditScoreHistory {
+    %% Domain: INVESTMENTS
+    MilestoneReleaseRecord {
+        string id PK
+    }
+    PaymentDistribution {
+        string id PK
+    }
+    AutoInvestPlan {
+        string id PK
+    }
+    InvestmentEvent {
+        string id PK
+    }
+    Investment {
+        string id PK
+    }
+    LiquiditySnapshot {
+        string id PK
+    }
+    PortfolioVaRLimit {
+        string id PK
+    }
+    SecondaryOrder {
+        string id PK
+    }
+    SecondaryTrade {
+        string id PK
+    }
+    OutboxEntity {
+        string id PK
+    }
+    %% Domain: PAYMENTS
+    AccountMergeRecovery {
+        string id PK
+    }
+    Sep24Transaction {
+        string id PK
+    }
+    StellarHistory {
+        string id PK
+    }
+    UnrecognisedPayment {
+        string id PK
+    }
+    %% Domain: COMPLIANCE
+    InvestmentArchive {
+        string id PK
+    }
+    ShipmentMilestoneArchive {
+        string id PK
+    }
+    TradeDealArchive {
+        string id PK
+    }
+    SystemAuditLog {
+        string id PK
+    }
+    ComplianceReport {
+        string id PK
+    }
+    RegulatoryRuleExecution {
+        string id PK
+    }
+    RegulatoryRule {
+        string id PK
+    }
+    AdminAction {
+        string id PK
+    }
+    AuditLog {
+        string id PK
+    }
+    ComplianceAlert {
+        string id PK
+    }
+    FeeConfiguration {
+        string id PK
+    }
+    LoginLog {
+        string id PK
+    }
+    SecurityIpBlock {
+        string id PK
+    }
+    TransactionLog {
+        string id PK
+    }
+    RemediationAction {
+        string id PK
+    }
+    RemediationPolicy {
+        string id PK
+    }
+    RemediationScript {
+        string id PK
+    }
+    SelfHealingIssue {
         string id PK
     }
     WebhookSubscription {
         string id PK
     }
-    %% Domain: DEALS
-    %% Domain: INVESTMENTS
-    %% Domain: PAYMENTS
-    %% Domain: COMPLIANCE
 
     %% Relationships
     AnnualInvestmentTotal }o--|| User : "ManyToOne"
     Achievement }o--|| User : "ManyToOne"
+    AMMLiquidityPosition }o--|| AMMPool : "ManyToOne"
+    AMMLiquidityPosition }o--|| User : "ManyToOne"
+    AMMMiningReward }o--|| AMMPool : "ManyToOne"
+    AMMMiningReward }o--|| User : "ManyToOne"
+    AMMPool }o--|| TradeDeal : "ManyToOne"
+    AMMPool }o--|| User : "ManyToOne"
+    AMMPool ||--o{ AMMLiquidityPosition : "OneToMany"
+    AMMPool ||--o{ AMMSwap : "OneToMany"
+    AMMSwap }o--|| AMMPool : "ManyToOne"
+    AMMSwap }o--|| User : "ManyToOne"
+    BiometricCredential }o--|| User : "ManyToOne"
     KycSubmission }o--|| User : "ManyToOne"
     ReferralCode }o--|| User : "ManyToOne"
     Referral }o--|| User : "ManyToOne"
@@ -232,6 +306,8 @@ erDiagram
     NotificationPreference }o--|| User : "ManyToOne"
     NotificationEntity }o--|| User : "ManyToOne"
     PushSubscriptionEntity }o--|| User : "ManyToOne"
+    MilestoneComment }o--|| ShipmentMilestone : "ManyToOne"
+    ContractDispute }o--|| TradeDeal : "ManyToOne"
     DealCoFarmer }o--|| TradeDeal : "ManyToOne"
     DealCoFarmer }o--|| User : "ManyToOne"
     DealHealthAlert }o--|| TradeDeal : "ManyToOne"
@@ -240,5 +316,7 @@ erDiagram
     TradeDeal }o--|| User : "ManyToOne"
     TradeDeal ||--o{ Document : "OneToMany"
     TradeDeal ||--o{ Investment : "OneToMany"
+    WatchlistItem }o--|| User : "ManyToOne"
+    WatchlistItem }o--|| TradeDeal : "ManyToOne"
 ```
 

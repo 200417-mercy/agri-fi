@@ -39,6 +39,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { APP_FILTER } from '@nestjs/core';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { AuditModule } from './audit/audit.module';
+import { AuditRetentionModule } from './audit/audit-retention.module';
 import { GraphQLApiModule } from './graphql/graphql.module';
 import { TradeDeal } from './trade-deals/entities/trade-deal.entity';
 import { Investment } from './investments/entities/investment.entity';
@@ -51,6 +52,7 @@ import { UpgradeModule } from './upgrade/upgrade.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { SecretsModule } from './secrets/secrets.module';
 import { PublicApiModule } from './public-api/public-api.module';
+import { SelfHealingModule } from './self-healing/self-healing.module';
 import { KycRulesModule } from './kyc-rules/kyc-rules.module';
 import { AccreditationModule } from './accreditation/accreditation.module';
 import { ZkpModule } from './zkp/zkp.module';
@@ -100,6 +102,7 @@ import { ZkpModule } from './zkp/zkp.module';
     SorobanModule,
     MetricsModule,
     AuditModule,
+    AuditRetentionModule,
     AchievementModule,
     GraphQLApiModule,
     EmailSequenceModule,
@@ -109,6 +112,7 @@ import { ZkpModule } from './zkp/zkp.module';
     WebhooksModule,
     SecretsModule,
     PublicApiModule,
+    SelfHealingModule,
     ReferralsModule,
     KycRulesModule,
     AccreditationModule,

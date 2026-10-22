@@ -73,12 +73,19 @@ export interface DealCleanupPayload extends BasePayload {
   tradeDealId: string;
 }
 
+/** Issue #953: payload for the escrow.release_notify queue event. */
+export interface EscrowReleaseNotifyPayload extends BasePayload {
+  dealId: string;
+  tradeTokenCode: string;
+}
+
 const EVENTS = {
   DEAL_DELIVERED: 'deal.delivered',
   INVESTMENT_FUND: 'investment.fund',
   DEAL_FUNDED: 'deal.funded',
   DEAL_PUBLISH: 'deal.publish',
   DEAL_CLEANUP: 'deal.cleanup',
+  ESCROW_RELEASE_NOTIFY: 'escrow.release_notify',
 } as const;
 
 @Injectable()
