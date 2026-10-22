@@ -32,6 +32,9 @@ erDiagram
     NotificationEntity {
         string id PK
     }
+    PushSubscriptionEntity {
+        string id PK
+    }
     FarmerCreditScoreHistory {
         string id PK
     }
@@ -58,6 +61,9 @@ erDiagram
         string id PK
     }
     %% Domain: INVESTMENTS
+    MilestoneReleaseRecord {
+        string id PK
+    }
     PaymentDistribution {
         string id PK
     }
@@ -70,7 +76,7 @@ erDiagram
     Investment {
         string id PK
     }
-    SellOrder {
+    SecondaryOrder {
         string id PK
     }
     SecondaryTrade {
@@ -126,6 +132,18 @@ erDiagram
     SecurityIpBlock {
         string id PK
     }
+    RemediationAction {
+        string id PK
+    }
+    RemediationPolicy {
+        string id PK
+    }
+    RemediationScript {
+        string id PK
+    }
+    SelfHealingIssue {
+        string id PK
+    }
     WebhookSubscription {
         string id PK
     }
@@ -136,14 +154,17 @@ erDiagram
     ReferralCode }o--|| User : "ManyToOne"
     Referral }o--|| User : "ManyToOne"
     InvestorEmailSequence }o--|| User : "ManyToOne"
+    MilestoneReleaseRecord }o--|| TradeDeal : "ManyToOne"
     PaymentDistribution }o--|| TradeDeal : "ManyToOne"
     TransactionLog }o--|| User : "ManyToOne"
     TransactionLog }o--|| TradeDeal : "ManyToOne"
     Investment }o--|| TradeDeal : "ManyToOne"
     Investment }o--|| User : "ManyToOne"
+    SecondaryOrder }o--|| User : "ManyToOne"
     SecondaryTrade }o--|| User : "ManyToOne"
     NotificationPreference }o--|| User : "ManyToOne"
     NotificationEntity }o--|| User : "ManyToOne"
+    PushSubscriptionEntity }o--|| User : "ManyToOne"
     DealCoFarmer }o--|| TradeDeal : "ManyToOne"
     DealCoFarmer }o--|| User : "ManyToOne"
     DealHealthAlert }o--|| TradeDeal : "ManyToOne"
