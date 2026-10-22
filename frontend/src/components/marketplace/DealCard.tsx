@@ -1,6 +1,8 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { Deal } from '@/lib/api';
+import { useCurrencyFormat } from '@/hooks/useCurrencyFormat';
+import { useNumberFormat } from '@/hooks/useNumberFormat';
 
 const STATUS_CONFIG: Record<string, { cls: string; dot: string }> = {
   open:      { cls: 'badge-green',  dot: 'bg-emerald-500' },
@@ -9,6 +11,20 @@ const STATUS_CONFIG: Record<string, { cls: string; dot: string }> = {
   delivered: { cls: 'badge-purple', dot: 'bg-violet-500' },
   completed: { cls: 'badge-gray',   dot: 'bg-slate-400' },
   failed:    { cls: 'badge-red',    dot: 'bg-red-500' },
+};
+
+/**
+ * Credit tier of the farmer behind a deal (#1160). The score itself is
+ * the same 300-850 scale the farmer sees on their own profile.
+ */
+const CREDIT_TIER_CONFIG: Record<
+  string,
+  { cls: string; label: string }
+> = {
+  Excellent: { cls: 'bg-emerald-50 text-emerald-700 border-emerald-200', label: 'Excellent credit' },
+  Good:      { cls: 'bg-blue-50 text-blue-700 border-blue-200', label: 'Good credit' },
+  Fair:      { cls: 'bg-amber-50 text-amber-700 border-amber-200', label: 'Fair credit' },
+  Poor:      { cls: 'bg-rose-50 text-rose-700 border-rose-200', label: 'Poor credit' },
 };
 
 // Matches the grid breakpoints the marketplace page renders this card in
@@ -55,11 +71,16 @@ export default function DealCard({
   selected?: boolean;
   onToggleCompare?: () => void;
 }) {
+  const { formatCurrency } = useCurrencyFormat();
+  const { formatNumber } = useNumberFormat();
   const pct = deal.total_value > 0
     ? Math.min((Number(deal.total_invested) / Number(deal.total_value)) * 100, 100) : 0;
   const tokensLeft = Math.max(0, Number(deal.token_count) - Math.floor(Number(deal.total_invested) / 100));
   const sc = STATUS_CONFIG[deal.status] ?? STATUS_CONFIG.draft;
   const daysLeft = Math.max(0, Math.ceil((new Date(deal.delivery_date).getTime() - Date.now()) / 86400000));
+  const creditTier = deal.farmer_credit_tier
+    ? CREDIT_TIER_CONFIG[deal.farmer_credit_tier]
+    : undefined;
 
   return (
     <div className="relative">
@@ -89,15 +110,15 @@ export default function DealCard({
         <div className="grid grid-cols-2 gap-3">
           <div className="bg-slate-50 rounded-xl p-3">
             <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wide">Total Value</p>
-            <p className="font-bold text-slate-900 text-sm mt-0.5">${Number(deal.total_value).toLocaleString()}</p>
+            <p className="font-bold text-slate-900 text-sm mt-0.5">{formatCurrency(deal.total_value, 'USD', { decimalPlaces: 0 })}</p>
           </div>
           <div className="bg-slate-50 rounded-xl p-3">
             <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wide">Quantity</p>
-            <p className="font-bold text-slate-900 text-sm mt-0.5">{Number(deal.quantity).toLocaleString()} {deal.quantity_unit}</p>
+            <p className="font-bold text-slate-900 text-sm mt-0.5">{formatNumber(deal.quantity)} {deal.quantity_unit}</p>
           </div>
           <div className="bg-slate-50 rounded-xl p-3">
             <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wide">Tokens Left</p>
-            <p className="font-bold text-slate-900 text-sm mt-0.5">{tokensLeft.toLocaleString()}</p>
+            <p className="font-bold text-slate-900 text-sm mt-0.5">{formatNumber(tokensLeft)}</p>
           </div>
           <div className="bg-slate-50 rounded-xl p-3">
             <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wide">Delivery</p>
@@ -109,9 +130,22 @@ export default function DealCard({
 
         {/* Progress */}
         <div className="mt-auto space-y-1.5">
+          {creditTier && deal.farmer_credit_score != null && (
+            <div className="flex items-center justify-between gap-2">
+              <span
+                className={`rounded-full border px-2.5 py-0.5 text-[10px] font-bold ${creditTier.cls}`}
+                title={`Farmer credit score: ${deal.farmer_credit_score}`}
+              >
+                {creditTier.label}
+              </span>
+              <span className="text-[10px] font-semibold text-slate-400 tabular-nums">
+                Score {deal.farmer_credit_score}
+              </span>
+            </div>
+          )}
           <div className="flex justify-between items-center text-xs">
             <span className="text-slate-500 font-medium">
-              ${Number(deal.total_invested).toLocaleString()} raised
+              {formatCurrency(deal.total_invested, 'USD', { decimalPlaces: 0 })} raised
             </span>
             <span className={`font-bold ${pct >= 100 ? 'text-blue-600' : 'text-brand-600'}`}>
               {pct.toFixed(1)}%
@@ -122,7 +156,7 @@ export default function DealCard({
               style={{ width: `${pct}%` }} />
           </div>
           <p className="text-[10px] text-slate-400">
-            of ${Number(deal.total_value).toLocaleString()} goal
+            of {formatCurrency(deal.total_value, 'USD', { decimalPlaces: 0 })} goal
           </p>
         </div>
       </div>

@@ -2,6 +2,9 @@ import {
   BadGatewayException,
   BadRequestException,
   Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -23,6 +26,11 @@ import * as openpgp from 'openpgp';
 import { fromBuffer as fileTypeFromBuffer } from 'file-type';
 import sharp from 'sharp';
 import { PDFDocument } from 'pdf-lib';
+import {
+  WatermarkService,
+  WatermarkOptions,
+} from './watermark.service';
+import { DocumentClassificationService } from './document-classification.service';
 
 const ALLOWED_MIME_TYPES = ['application/pdf', 'image/png', 'image/jpeg'];
 
@@ -36,6 +44,7 @@ interface UploadChunkSession {
 
 @Injectable()
 export class DocumentsService {
+  private readonly logger = new Logger(DocumentsService.name);
   private storageServicePromise: Promise<StorageService> | null = null;
   private readonly scannedFiles = new WeakSet<object>();
   private readonly uploadChunkSessions = new Map<string, UploadChunkSession>();
@@ -49,13 +58,37 @@ export class DocumentsService {
     private readonly config: ConfigService,
     private readonly clamScanService: ClamScanService,
     private readonly auditService: AuditService,
+    private readonly classificationService: DocumentClassificationService,
+    @Optional() private readonly watermarkService?: WatermarkService,
   ) {}
 
+  /**
+   * Whether malware scanning is required for uploads. Defaults to enabled;
+   * production env validation force-enables it, so disabling is only
+   * possible outside production (e.g. local development).
+   */
+  isScanningEnabled(): boolean {
+    const raw = this.config?.get?.<string | boolean>('CLAM_SCAN_ENABLED');
+    if (raw === undefined || raw === null || raw === '') return true;
+    return raw === true || String(raw).toLowerCase() === 'true';
+  }
+
+  /**
+   * Scan a document before it is persisted.
+   *
+   * Fails closed: if scanning is enabled and ClamAV is unreachable, times out,
+   * or returns an unexpected response, the upload is rejected with
+   * `503 SCAN_UNAVAILABLE` and nothing is stored (#967).
+   */
   async scanBeforeUpload(
     file: Express.Multer.File,
     userId: string,
   ): Promise<void> {
     if (this.scannedFiles.has(file)) return;
+
+    if (!this.isScanningEnabled()) {
+      return;
+    }
 
     try {
       const result = await this.clamScanService.scan(file.buffer);
@@ -80,9 +113,20 @@ export class DocumentsService {
     } catch (error) {
       if (error instanceof UnprocessableEntityException) throw error;
 
-      throw new ServiceUnavailableException(
-        'Document security scanning is unavailable; upload rejected.',
+      this.logger.error(
+        `ClamAV scan unavailable for ${file.originalname}; rejecting upload (fail-closed): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
       );
+
+      throw new ServiceUnavailableException({
+        statusCode: 503,
+        error: 'Service Unavailable',
+        code: 'SCAN_UNAVAILABLE',
+        message:
+          'Document security scanning is unavailable; upload rejected. ' +
+          'This service fails closed rather than accepting unscanned files.',
+      });
     }
   }
 
@@ -92,6 +136,15 @@ export class DocumentsService {
    * document upload is the only feature that needs it.
    */
   private async getStorageService(): Promise<StorageService> {
+    return this.getStorageServicePublic();
+  }
+
+  /**
+   * Public accessor for the lazily-loaded StorageService, so other services
+   * within the documents module (e.g. SignatureRequestService) can reuse the
+   * same singleton without re-triggering the LazyModuleLoader.
+   */
+  async getStorageServicePublic(): Promise<StorageService> {
     if (!this.storageServicePromise) {
       this.storageServicePromise = this.lazyModuleLoader
         .load(() => StorageModule)
@@ -296,12 +349,14 @@ export class DocumentsService {
     tradeDealId,
     userId,
     signatureAsc,
+    watermark,
   }: {
     file: Express.Multer.File;
     docType: string;
     tradeDealId: string;
     userId: string;
     signatureAsc?: string;
+    watermark?: WatermarkOptions;
   }) {
     await this.scanBeforeUpload(file, userId);
 
@@ -309,9 +364,39 @@ export class DocumentsService {
     //    declared MIME type. Extension/header checks alone can be spoofed.
     await this.verifyFileSignature(file.buffer, file.mimetype);
 
+    // 0a. Apply optional PDF watermark overlay (deal id, date, requester).
+    //     When watermarking is requested the watermarked buffer is used for
+    //     storage and Stellar anchoring, so the stored document carries the
+    //     compliance overlay (issue #1005).
+    let uploadBuffer = file.buffer;
+    let uploadMimeType = file.mimetype;
+    if (watermark && this.watermarkService) {
+      const { buffer: watermarked, pageCount } =
+        await this.watermarkService.applyWatermark(
+          file.buffer,
+          file.mimetype,
+          watermark,
+        );
+      uploadBuffer = watermarked;
+      uploadMimeType = file.mimetype;
+      this.auditService
+        .logEvent({
+          actorId: userId,
+          actorRole: 'user',
+          route: 'POST /api/v1/documents',
+          statusCode: 200,
+          requestDetails: {
+            documentType: docType,
+            watermarkApplied: true,
+            watermarkedPageCount: pageCount,
+          },
+        })
+        .catch(() => null);
+    }
+
     // 1. Compress file before upload to save storage space
     const { buffer: compressedBuffer, mimeType: compressedMimeType } =
-      await this.compressFile(file.buffer, file.mimetype);
+      await this.compressFile(uploadBuffer, uploadMimeType);
 
     // 2. Upload (IPFS → S3 fallback handled internally)
     const storageService = await this.getStorageService();
@@ -357,8 +442,11 @@ export class DocumentsService {
       signatureVerified,
     });
 
+    await this.classificationService.classify(doc, file.buffer, file.originalname);
+    const classifiedDocument = await this.tradeDealsService.getDocument(doc.id);
+
     return {
-      ...doc,
+      ...(classifiedDocument ?? doc),
       verificationUrl: this.stellarService.getVerificationUrl(stellarTxId),
     };
   }
@@ -455,5 +543,65 @@ export class DocumentsService {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Public wrapper around the private verifySignature so that
+   * SignatureRequestService can reuse the same trusted-authority logic.
+   */
+  async verifyOpenPgpSignature(
+    fileBuffer: Buffer,
+    armoredSig: string,
+  ): Promise<boolean> {
+    return this.verifySignature(fileBuffer, armoredSig);
+  }
+
+  /**
+   * Regenerate an existing document with a watermark applied, then re-upload.
+   * Used when an earlier upload skipped the watermark option.
+   *
+   * Returns the updated document reference.
+   */
+  async regenerateWithWatermark(
+    documentId: string,
+    watermark: WatermarkOptions,
+  ): Promise<{ ipfsHash: string; storageUrl: string }> {
+    if (!this.watermarkService) {
+      throw new BadRequestException(
+        'WatermarkService is not available; cannot apply watermark.',
+      );
+    }
+
+    const doc = await this.tradeDealsService.getDocument(documentId);
+    if (!doc) {
+      throw new NotFoundException('Document not found.');
+    }
+
+    const storageService = await this.getStorageService();
+    const originalBuffer =
+      await storageService.fetchAndVerifyIpfsDocument(doc.ipfsHash);
+
+    const { buffer: watermarked } = await this.watermarkService
+      .applyWatermark(originalBuffer, 'application/pdf', watermark);
+
+    const { buffer: compressedBuffer, mimeType } = await this.compressFile(
+      watermarked,
+      'application/pdf',
+    );
+
+    const { hash, url } = await storageService.upload(
+      compressedBuffer,
+      mimeType,
+    );
+
+    if (!isValidIpfsCid(hash)) {
+      throw new BadGatewayException(
+        'Storage provider returned an invalid IPFS CID.',
+      );
+    }
+
+    await this.tradeDealsService.updateDocumentStorage(documentId, hash, url);
+
+    return { ipfsHash: hash, storageUrl: url };
   }
 }

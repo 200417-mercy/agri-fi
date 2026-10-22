@@ -1,5 +1,54 @@
 'use client';
 
+// =============================================================================
+// Issue #979 — quality(frontend): Consolidate date formatting via useDateFormat
+// https://github.com/Agri-fund/agri-fi/issues/979
+//
+// ─── AFFECTED CODE IN THIS FILE ──────────────────────────────────────────────
+//
+// The `formatShortDate` helper defined at the module level (around line 63):
+//
+//   function formatShortDate(date: string) {
+//     const value = new Date(date);
+//     if (Number.isNaN(value.getTime())) return date;
+//     return value.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+//   }
+//
+// This is a plain function — it is called both inside the Recharts
+// XAxis `tickFormatter` and inside the Tooltip `labelFormatter`.
+// Because it calls toLocaleDateString(undefined, ...) it uses the
+// browser's default locale, not the active next-intl locale.
+//
+// ─── REQUIRED CHANGE ─────────────────────────────────────────────────────────
+//
+// Since this is a client component, the useDateFormat hook can be used.
+// The refactor requires moving the formatting call inside the component
+// so the hook's locale is in scope:
+//
+//   // 1. Import the hook
+//   import { useDateFormat } from '@/hooks/useDateFormat';
+//
+//   // 2. Inside the ReferralDashboard component body:
+//   const { formatDate } = useDateFormat();
+//
+//   // 3. Replace the module-level formatShortDate function calls:
+//   // BEFORE (in XAxis tickFormatter and Tooltip labelFormatter):
+//   tickFormatter={formatShortDate}
+//   labelFormatter={(label) => formatShortDate(String(label))}
+//
+//   // AFTER:
+//   tickFormatter={(date) => formatDate(date, { month: 'short', day: 'numeric' })}
+//   labelFormatter={(label) => formatDate(String(label), { month: 'short', day: 'numeric' })}
+//
+//   // 4. Delete the module-level formatShortDate function entirely.
+//
+// Note: the Recharts Tooltip labelFormatter receives either a string or
+// number depending on the dataKey type.  Wrapping in String() before
+// passing to formatDate() is safe — useDateFormat's formatDate() accepts
+// Date | string | number.
+//
+// =============================================================================
+
 import {
   Bar,
   BarChart,
@@ -12,6 +61,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import { useCurrencyFormat } from '@/hooks/useCurrencyFormat';
 
 export interface ReferralFunnelStep {
   stage: 'clicks' | 'signups' | 'activated';
@@ -44,13 +94,16 @@ export interface ReferralAnalytics {
   funnel: ReferralFunnelStep[];
   channels: ReferralChannelSummary[];
   timeline: ReferralTimelinePoint[];
+  payoutStatus?: {
+    pending: number;
+    accrued: number;
+    paid: number;
+    failed: number;
+    totalAmountPending: number;
+    totalAmountAccrued: number;
+    totalAmountPaid: number;
+  };
 }
-
-const currency = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  maximumFractionDigits: 0,
-});
 
 const chartColors = ['#22c55e', '#3b82f6', '#8b5cf6'];
 
@@ -72,6 +125,7 @@ export default function ReferralDashboard({
   data?: ReferralAnalytics | null;
   loading?: boolean;
 }) {
+  const { formatCurrency } = useCurrencyFormat();
   if (loading) {
     return (
       <div className="card p-5 animate-pulse">
@@ -111,7 +165,7 @@ export default function ReferralDashboard({
           <p className="text-sm text-slate-500 mb-1">Acquisition loop</p>
           <h2 className="section-title">Referral Funnel</h2>
         </div>
-        <span className="badge-green">{currency.format(data.totalRewards)} accrued</span>
+        <span className="badge-green">{formatCurrency(data.totalRewards, 'USD', { decimalPlaces: 0 })} accrued</span>
       </div>
 
       <div className="grid sm:grid-cols-3 gap-4">
@@ -185,7 +239,7 @@ export default function ReferralDashboard({
               <XAxis dataKey="date" tickFormatter={formatShortDate} tick={{ fill: 'var(--chart-axis)', fontSize: 11 }} />
               <YAxis tick={{ fill: 'var(--chart-axis)', fontSize: 11 }} />
               <Tooltip
-                formatter={(value: number) => [currency.format(value), 'Rewards']}
+                formatter={(value: number) => [formatCurrency(value, 'USD', { decimalPlaces: 0 }), 'Rewards']}
                 labelFormatter={(label) => formatShortDate(String(label))}
               />
               <Line type="monotone" dataKey="rewards" stroke="#22c55e" strokeWidth={3} dot={{ r: 4 }} />
@@ -219,7 +273,7 @@ export default function ReferralDashboard({
                   <td className="py-3 pr-4">{row.clicks}</td>
                   <td className="py-3 pr-4">{row.signups}</td>
                   <td className="py-3 pr-4">{row.activated}</td>
-                  <td className="py-3 pr-4">{currency.format(row.rewards)}</td>
+                  <td className="py-3 pr-4">{formatCurrency(row.rewards, 'USD', { decimalPlaces: 0 })}</td>
                   <td className="py-3">{formatPercent(row.rewardRate)}</td>
                 </tr>
               ))}
@@ -227,6 +281,38 @@ export default function ReferralDashboard({
           </table>
         </div>
       </div>
+
+      {data.payoutStatus && (
+        <div className="card p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="section-title text-base">Reward Payout Status</h3>
+            <span className="text-xs text-slate-400">Accrual → payout</span>
+          </div>
+          <div className="grid sm:grid-cols-3 gap-4">
+            <div className="rounded-xl bg-amber-50 p-4">
+              <p className="text-xs uppercase text-amber-700 mb-1">Pending</p>
+              <p className="text-xl font-bold text-amber-900">{data.payoutStatus.pending}</p>
+              <p className="text-sm text-amber-700 mt-1">
+                {formatCurrency(data.payoutStatus.totalAmountPending, 'USD', { decimalPlaces: 2 })}
+              </p>
+            </div>
+            <div className="rounded-xl bg-emerald-50 p-4">
+              <p className="text-xs uppercase text-emerald-700 mb-1">Accrued</p>
+              <p className="text-xl font-bold text-emerald-900">{data.payoutStatus.accrued}</p>
+              <p className="text-sm text-emerald-700 mt-1">
+                {formatCurrency(data.payoutStatus.totalAmountAccrued, 'USD', { decimalPlaces: 2 })}
+              </p>
+            </div>
+            <div className="rounded-xl bg-blue-50 p-4">
+              <p className="text-xs uppercase text-blue-700 mb-1">Paid</p>
+              <p className="text-xl font-bold text-blue-900">{data.payoutStatus.paid}</p>
+              <p className="text-sm text-blue-700 mt-1">
+                {formatCurrency(data.payoutStatus.totalAmountPaid, 'USD', { decimalPlaces: 2 })}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
