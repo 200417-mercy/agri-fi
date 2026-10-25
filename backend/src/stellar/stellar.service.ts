@@ -2315,7 +2315,7 @@ const anchorsService = this.anchorsService ?? new AnchorsService();
     const MAX_RETRIES = 3;
     let currentTx = tx;
 
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    for (let attempt = 1; attempt <= STELLAR_RETRY_POLICY.maxAttempts; attempt++) {
       try {
         return await this.server.submitTransaction(currentTx);
       } catch (err: any) {
@@ -2348,7 +2348,7 @@ const anchorsService = this.anchorsService ?? new AnchorsService();
         const isRetryable =
           (status !== undefined && RETRYABLE.has(status)) || isTimeout;
 
-        if (!isRetryable || attempt === MAX_RETRIES) {
+        if (!isRetryable || STELLAR_RETRY_POLICY.isExhausted(attempt)) {
           throw err;
         }
 

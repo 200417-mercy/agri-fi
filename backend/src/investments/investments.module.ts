@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { InvestmentsService } from './investments.service';
+import { PortfolioSummaryService } from './portfolio-summary.service';
 import { InvestmentsController } from './investments.controller';
 import { FeeConfigurationService } from './fee-configuration.service';
 import { FeeConfigurationController } from './fee-configuration.controller';
@@ -28,6 +29,11 @@ import { StressTestingModule } from '../stress-testing/stress-testing.module';
 import { LiquidityRiskService } from './liquidity-risk.service';
 import { LiquidityRiskController } from './liquidity-risk.controller';
 import { LiquiditySnapshot } from './entities/liquidity-snapshot.entity';
+import { PortfolioVaRService } from './portfolio-var.service';
+import { PortfolioVaRLimit } from './entities/portfolio-var-limit.entity';
+import { OracleFeed } from '../oracles/entities/oracle-feed.entity';
+import { OracleObservation } from '../oracles/entities/oracle-observation.entity';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -42,6 +48,9 @@ import { LiquiditySnapshot } from './entities/liquidity-snapshot.entity';
       FeeConfiguration,
       PaymentDistribution,
       LiquiditySnapshot,
+      PortfolioVaRLimit,
+      OracleFeed,
+      OracleObservation,
     ]),
     StellarModule,
     QueueModule,
@@ -49,6 +58,7 @@ import { LiquiditySnapshot } from './entities/liquidity-snapshot.entity';
     AuthModule,
     AccreditationModule,
     StressTestingModule,
+    NotificationsModule,
   ],
   controllers: [
     InvestmentsController,
@@ -59,6 +69,7 @@ import { LiquiditySnapshot } from './entities/liquidity-snapshot.entity';
   ],
   providers: [
     InvestmentsService,
+    PortfolioSummaryService,
     InvestmentEventStore,
     FeeCalculatorService,
     FeeConfigurationService,
@@ -71,6 +82,7 @@ import { LiquiditySnapshot } from './entities/liquidity-snapshot.entity';
     AutoInvestService,
     RiskScoringService,
     LiquidityRiskService,
+    PortfolioVaRService,
   ],
   exports: [
     InvestmentsService,
@@ -82,6 +94,7 @@ import { LiquiditySnapshot } from './entities/liquidity-snapshot.entity';
     SecondaryOrderMatchingService,
     AutoInvestService,
     LiquidityRiskService,
+    PortfolioVaRService,
   ],
 })
 export class InvestmentsModule {}

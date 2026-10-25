@@ -2,6 +2,7 @@ import {
   BadGatewayException,
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
   Optional,
   ServiceUnavailableException,
@@ -43,6 +44,7 @@ interface UploadChunkSession {
 
 @Injectable()
 export class DocumentsService {
+  private readonly logger = new Logger(DocumentsService.name);
   private storageServicePromise: Promise<StorageService> | null = null;
   private readonly scannedFiles = new WeakSet<object>();
   private readonly uploadChunkSessions = new Map<string, UploadChunkSession>();
@@ -60,11 +62,33 @@ export class DocumentsService {
     @Optional() private readonly watermarkService?: WatermarkService,
   ) {}
 
+  /**
+   * Whether malware scanning is required for uploads. Defaults to enabled;
+   * production env validation force-enables it, so disabling is only
+   * possible outside production (e.g. local development).
+   */
+  isScanningEnabled(): boolean {
+    const raw = this.config?.get?.<string | boolean>('CLAM_SCAN_ENABLED');
+    if (raw === undefined || raw === null || raw === '') return true;
+    return raw === true || String(raw).toLowerCase() === 'true';
+  }
+
+  /**
+   * Scan a document before it is persisted.
+   *
+   * Fails closed: if scanning is enabled and ClamAV is unreachable, times out,
+   * or returns an unexpected response, the upload is rejected with
+   * `503 SCAN_UNAVAILABLE` and nothing is stored (#967).
+   */
   async scanBeforeUpload(
     file: Express.Multer.File,
     userId: string,
   ): Promise<void> {
     if (this.scannedFiles.has(file)) return;
+
+    if (!this.isScanningEnabled()) {
+      return;
+    }
 
     try {
       const result = await this.clamScanService.scan(file.buffer);
@@ -89,9 +113,20 @@ export class DocumentsService {
     } catch (error) {
       if (error instanceof UnprocessableEntityException) throw error;
 
-      throw new ServiceUnavailableException(
-        'Document security scanning is unavailable; upload rejected.',
+      this.logger.error(
+        `ClamAV scan unavailable for ${file.originalname}; rejecting upload (fail-closed): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
       );
+
+      throw new ServiceUnavailableException({
+        statusCode: 503,
+        error: 'Service Unavailable',
+        code: 'SCAN_UNAVAILABLE',
+        message:
+          'Document security scanning is unavailable; upload rejected. ' +
+          'This service fails closed rather than accepting unscanned files.',
+      });
     }
   }
 

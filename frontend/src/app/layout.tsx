@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -43,6 +44,9 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
+        {/* #1170 — restores the persisted appearance preferences (accent
+            palette, font scale, contrast) before the first paint. */}
+        <Script src="/theme-bootstrap.js" strategy="beforeInteractive" />
         {/* PWA: Service Worker Registration */}
         <script
           dangerouslySetInnerHTML={{
